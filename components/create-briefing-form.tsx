@@ -14,7 +14,7 @@ interface BriefingData {
 }
 
 interface CreateBriefingFormProps {
-  onBriefingChange: (data: BriefingData) => void
+  onBriefingChange: (data: BriefingData | null) => void
   onSave: (data: BriefingData, message: string) => void
 }
 
