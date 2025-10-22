@@ -9,8 +9,6 @@ import { AlertCircle, Loader2 } from "lucide-react"
 interface BriefingData {
   url: string
   prompt: string
-  recipientEmails: string[]
-  deliveryTime: string
 }
 
 interface CreateBriefingFormProps {
@@ -21,8 +19,6 @@ interface CreateBriefingFormProps {
 export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingFormProps) {
   const [url, setUrl] = useState("")
   const [prompt, setPrompt] = useState("")
-  const [emails, setEmails] = useState("")
-  const [deliveryTime, setDeliveryTime] = useState("09:00")
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [isLoading, setIsLoading] = useState(false)
   const [isDemoLoading, setIsDemoLoading] = useState(false)
@@ -44,16 +40,6 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
       newErrors.prompt = "Prompt is required"
     }
 
-    if (!emails.trim()) {
-      newErrors.emails = "At least one email is required"
-    } else {
-      const emailList = emails.split(",").map((e) => e.trim())
-      const invalidEmails = emailList.filter((e) => !e.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/))
-      if (invalidEmails.length > 0) {
-        newErrors.emails = "One or more emails are invalid"
-      }
-    }
-
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
   }
@@ -62,12 +48,9 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
     if (validateForm()) {
       setIsDemoLoading(true)
       await new Promise((resolve) => setTimeout(resolve, 500))
-      const emailList = emails.split(",").map((e) => e.trim())
       const data: BriefingData = {
         url,
         prompt,
-        recipientEmails: emailList,
-        deliveryTime,
       }
       onBriefingChange(data)
       setIsDemoLoading(false)
@@ -77,25 +60,20 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
   const handleSave = async () => {
     if (validateForm()) {
       setIsLoading(true)
-      const emailList = emails.split(",").map((e) => e.trim())
       const data: BriefingData = {
         url,
         prompt,
-        recipientEmails: emailList,
-        deliveryTime,
       }
 
       // Simulate API call
       await new Promise((resolve) => setTimeout(resolve, 1000))
 
-      const message = `✅ Daily email scheduled for ${deliveryTime} IST to ${emailList.join(", ")}. First send: ${new Date().toLocaleString()}.`
+      const message = `✅ Briefing "${prompt.slice(0, 40) || "Untitled"}" saved. Add it to a campaign to start sending.`
       onSave(data, message)
 
       // Reset form
       setUrl("")
       setPrompt("")
-      setEmails("")
-      setDeliveryTime("09:00")
       setErrors({})
       onBriefingChange(null)
 
@@ -103,7 +81,7 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
     }
   }
 
-  const isFormValid = url.trim() && prompt.trim() && emails.trim()
+  const isFormValid = url.trim() && prompt.trim()
 
   return (
     <Card className="h-fit shadow-sm hover:shadow-md transition-shadow duration-300">
@@ -151,46 +129,6 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
               <span>{errors.prompt}</span>
             </div>
           )}
-        </div>
-
-        {/* Recipient Emails */}
-        <div
-          className="space-y-2 animate-in fade-in slide-in-from-top duration-300"
-          style={{ animationDelay: "100ms" }}
-        >
-          <label className="text-sm font-medium">Recipient Email(s) *</label>
-          <Input
-            type="text"
-            placeholder="email@example.com, another@example.com"
-            value={emails}
-            onChange={(e) => {
-              setEmails(e.target.value)
-              if (errors.emails) setErrors({ ...errors, emails: "" })
-            }}
-            className="transition-all duration-200 focus:ring-2"
-          />
-          <p className="text-xs text-muted-foreground">Separate multiple emails with commas</p>
-          {errors.emails && (
-            <div className="flex gap-2 text-sm text-destructive animate-in fade-in duration-200">
-              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-              <span>{errors.emails}</span>
-            </div>
-          )}
-        </div>
-
-        {/* Delivery Time */}
-        <div
-          className="space-y-2 animate-in fade-in slide-in-from-top duration-300"
-          style={{ animationDelay: "150ms" }}
-        >
-          <label className="text-sm font-medium">Delivery Time (IST)</label>
-          <Input
-            type="time"
-            value={deliveryTime}
-            onChange={(e) => setDeliveryTime(e.target.value)}
-            className="transition-all duration-200 focus:ring-2"
-          />
-          <p className="text-xs text-muted-foreground">Default: 09:00 IST</p>
         </div>
 
         {/* Action Buttons */}

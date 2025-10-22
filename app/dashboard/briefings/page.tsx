@@ -4,51 +4,23 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Pause, Play, Trash2, Eye, Edit2 } from "lucide-react"
-
-interface Briefing {
-  id: string
-  name: string
-  recipients: string[]
-  schedule: string
-  lastSent: string
-  status: "active" | "paused" | "error"
-}
-
-const DEMO_BRIEFINGS: Briefing[] = [
-  {
-    id: "1",
-    name: "TechCrunch Daily",
-    recipients: ["john@example.com"],
-    schedule: "09:00 IST",
-    lastSent: "2025-10-22 09:15",
-    status: "active",
-  },
-  {
-    id: "2",
-    name: "The Verge News",
-    recipients: ["john@example.com", "jane@example.com"],
-    schedule: "14:00 IST",
-    lastSent: "2025-10-21 14:05",
-    status: "active",
-  },
-  {
-    id: "3",
-    name: "Hacker News Digest",
-    recipients: ["john@example.com"],
-    schedule: "18:00 IST",
-    lastSent: "2025-10-20 18:30",
-    status: "paused",
-  },
-]
+import { Pause, Play, Trash2, Eye, Edit2, Layers } from "lucide-react"
+import { DEMO_BRIEFINGS } from "@/lib/demo-data"
 
 export default function MyBriefingsPage() {
-  const [briefings, setBriefings] = useState<Briefing[]>(DEMO_BRIEFINGS)
+  const [briefings, setBriefings] = useState(DEMO_BRIEFINGS)
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const toggleStatus = (id: string) => {
     setBriefings(
-      briefings.map((b) => (b.id === id ? { ...b, status: b.status === "active" ? "paused" : "active" } : b)),
+      briefings.map((b) =>
+        b.id === id
+          ? {
+              ...b,
+              status: b.status === "active" ? "paused" : "active",
+            }
+          : b,
+      ),
     )
   }
 
@@ -79,7 +51,7 @@ export default function MyBriefingsPage() {
       <div className="border-b border-border p-6 flex items-center justify-between animate-in fade-in slide-in-from-top duration-300">
         <div>
           <h1 className="text-3xl font-bold">My Briefings</h1>
-          <p className="text-muted-foreground mt-1">Manage your automated daily summaries</p>
+          <p className="text-muted-foreground mt-1">Manage your summarization logic before assigning them to campaigns</p>
         </div>
         <Button
           onClick={() => (window.location.href = "/dashboard/create")}
@@ -96,7 +68,7 @@ export default function MyBriefingsPage() {
             <CardContent className="flex flex-col items-center justify-center py-12">
               <div className="text-6xl mb-4 animate-in scale-in duration-300">📋</div>
               <h3 className="text-lg font-semibold mb-2">No briefings yet</h3>
-              <p className="text-muted-foreground mb-6">Create your first daily summary to get started</p>
+              <p className="text-muted-foreground mb-6">Create your first briefing to start assembling campaigns</p>
               <Button onClick={() => (window.location.href = "/dashboard/create")}>Create Your First Briefing</Button>
             </CardContent>
           </Card>
@@ -119,18 +91,32 @@ export default function MyBriefingsPage() {
                           {briefing.status.charAt(0).toUpperCase() + briefing.status.slice(1)}
                         </Badge>
                       </div>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                      <p className="text-sm text-muted-foreground mb-3 line-clamp-2">
+                        {briefing.promptSummary}
+                      </p>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                         <div>
-                          <p className="text-muted-foreground">Recipients</p>
-                          <p className="font-medium">{briefing.recipients.length}</p>
+                          <p className="text-muted-foreground">Primary Source</p>
+                          <p className="font-medium">{briefing.source}</p>
                         </div>
                         <div>
-                          <p className="text-muted-foreground">Schedule</p>
-                          <p className="font-medium">{briefing.schedule}</p>
+                          <p className="text-muted-foreground">Last Updated</p>
+                          <p className="font-medium">{briefing.lastUpdated}</p>
                         </div>
-                        <div>
-                          <p className="text-muted-foreground">Last Sent</p>
-                          <p className="font-medium">{briefing.lastSent}</p>
+                        <div className="space-y-1">
+                          <p className="text-muted-foreground">Campaigns</p>
+                          {briefing.associatedCampaigns.length > 0 ? (
+                            <div className="flex flex-wrap gap-2">
+                              {briefing.associatedCampaigns.map((campaign) => (
+                                <Badge key={campaign} variant="secondary" className="gap-1">
+                                  <Layers className="w-3 h-3" />
+                                  {campaign}
+                                </Badge>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="font-medium">Not linked yet</p>
+                          )}
                         </div>
                       </div>
                     </div>

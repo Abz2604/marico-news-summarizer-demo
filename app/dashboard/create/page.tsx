@@ -8,8 +8,6 @@ import { SuccessBanner } from "@/components/success-banner"
 interface BriefingData {
   url: string
   prompt: string
-  recipientEmails: string[]
-  deliveryTime: string
 }
 
 export default function CreateBriefingPage() {

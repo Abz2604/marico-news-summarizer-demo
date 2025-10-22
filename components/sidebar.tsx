@@ -3,7 +3,7 @@
 import { usePathname, useRouter } from "next/navigation"
 import { useAuth } from "@/lib/auth-context"
 import { Button } from "@/components/ui/button"
-import { FileText, Settings, LogOut, Plus } from "lucide-react"
+import { FileText, Settings, LogOut, Plus, Layers } from "lucide-react"
 
 export function Sidebar() {
   const pathname = usePathname()
@@ -41,6 +41,15 @@ export function Sidebar() {
         >
           <Plus className="w-4 h-4" />
           Create Briefing
+        </Button>
+
+        <Button
+          variant={isActive("/dashboard/campaigns") ? "default" : "ghost"}
+          className="w-full justify-start gap-3"
+          onClick={() => router.push("/dashboard/campaigns")}
+        >
+          <Layers className="w-4 h-4" />
+          Campaigns
         </Button>
 
         <Button

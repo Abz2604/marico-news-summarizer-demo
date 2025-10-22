@@ -8,8 +8,6 @@ import { ExternalLink } from "lucide-react"
 interface BriefingData {
   url: string
   prompt: string
-  recipientEmails: string[]
-  deliveryTime: string
 }
 
 interface DemoSummaryProps {
