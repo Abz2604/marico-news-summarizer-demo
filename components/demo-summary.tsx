@@ -14,42 +14,95 @@ interface DemoSummaryProps {
   briefingData: BriefingData | null
 }
 
-const DEMO_BULLETS = [
-  "OpenAI releases GPT-5 with improved reasoning capabilities",
-  "New AI safety framework adopted by major tech companies",
-  "Quantum computing breakthrough announced by Google",
-  "Tech stocks surge on AI investment optimism",
-  "New privacy regulations impact social media platforms",
-]
-
-const DEMO_SOURCES = [
-  { title: "TechCrunch", domain: "techcrunch.com", url: "https://techcrunch.com" },
-  { title: "The Verge", domain: "theverge.com", url: "https://theverge.com" },
-  { title: "Hacker News", domain: "news.ycombinator.com", url: "https://news.ycombinator.com" },
-]
+interface AgentSummaryResponse {
+  summary_markdown: string
+  bullet_points: string[]
+  citations: { url: string; label: string }[]
+  model: string
+}
 
 export function DemoSummary({ briefingData }: DemoSummaryProps) {
   const [bullets, setBullets] = useState<string[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
+  const [summaryMd, setSummaryMd] = useState<string>("")
+  const [sources, setSources] = useState<{ title: string; domain: string; url: string }[]>([])
 
   useEffect(() => {
-    if (briefingData) {
+    if (!briefingData) {
       setBullets([])
-      setIsStreaming(true)
-
-      DEMO_BULLETS.forEach((bullet, index) => {
-        setTimeout(() => {
-          setBullets((prev) => [...prev, bullet])
-        }, index * 250)
-      })
-
-      setTimeout(() => {
-        setIsStreaming(false)
-      }, DEMO_BULLETS.length * 250)
-    } else {
-      setBullets([])
+      setSummaryMd("")
+      setSources([])
       setIsStreaming(false)
+      return
     }
+
+    const controller = new AbortController()
+    const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000"
+
+    async function runAgent() {
+      setBullets([])
+      setSummaryMd("")
+      setSources([])
+      setIsStreaming(true)
+      try {
+        const response = await fetch(`${API_BASE}/api/agent/run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: briefingData.prompt,
+            seed_links: [briefingData.url],
+            max_articles: 3,
+          }),
+          signal: controller.signal,
+        })
+        if (!response.ok) {
+          throw new Error(`Request failed: ${response.status}`)
+        }
+        const data: AgentSummaryResponse = await response.json()
+
+        // Stream bullets into view
+        data.bullet_points.forEach((bullet, index) => {
+          setTimeout(() => {
+            setBullets((prev) => [...prev, bullet])
+          }, index * 250)
+        })
+
+        // If no bullets returned, try to parse bullets from markdown
+        if ((!data.bullet_points || data.bullet_points.length === 0) && data.summary_markdown) {
+          const lines = data.summary_markdown.split("\n").map((l) => l.trim())
+          const mdBullets = lines.filter((l) => l.startsWith("-") || l.startsWith("*") || l.startsWith("•"))
+          mdBullets.forEach((b, index) => {
+            const normalized = b.startsWith("-") ? b : `- ${b}`
+            setTimeout(() => setBullets((prev) => [...prev, normalized]), index * 200)
+          })
+        }
+
+        setSummaryMd(data.summary_markdown || "")
+
+        // Map citations to sources list (derive domain from URL)
+        const mapped = data.citations.map((c) => {
+          try {
+            const u = new URL(c.url)
+            const domain = u.hostname.replace("www.", "")
+            return { title: domain, domain, url: c.url }
+          } catch {
+            return { title: c.url, domain: c.url, url: c.url }
+          }
+        })
+        setSources(mapped)
+
+        const bulletCount = data.bullet_points.length
+        const mdCount = summaryMd ? summaryMd.split("\n").filter((l) => l.trim().startsWith("-") || l.trim().startsWith("*") || l.trim().startsWith("•")).length : 0
+        const delay = Math.max(bulletCount * 250, mdCount * 200)
+        setTimeout(() => setIsStreaming(false), delay)
+      } catch (err) {
+        setBullets(["Failed to generate summary. Please try again."])
+        setIsStreaming(false)
+      }
+    }
+
+    runAgent()
+    return () => controller.abort()
   }, [briefingData])
 
   if (!briefingData) {
@@ -109,12 +162,21 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
           )}
         </div>
 
+        {/* Summary markdown fallback */}
+        {bullets.length === 0 && !isStreaming && summaryMd && (
+          <div className="space-y-2">
+            <div className="p-3 bg-muted rounded-lg">
+              <div className="text-sm whitespace-pre-wrap">{summaryMd}</div>
+            </div>
+          </div>
+        )}
+
         {/* Sources */}
-        {bullets.length > 0 && (
+        {sources.length > 0 && (
           <div className="pt-4 border-t border-border animate-in fade-in slide-in-from-bottom-2 duration-300">
             <p className="text-xs font-semibold text-muted-foreground mb-3">SOURCES</p>
             <div className="space-y-2">
-              {DEMO_SOURCES.map((source, index) => (
+              {sources.map((source, index) => (
                 <a
                   key={index}
                   href={source.url}

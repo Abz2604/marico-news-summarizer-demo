@@ -20,6 +20,8 @@
 # production
 /build
 
+/api/benv/
+
 # misc
 .DS_Store
 *.pem

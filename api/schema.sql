@@ -1,0 +1,108 @@
+-- Snowflake schema for Marico News Summarizer (MVP)
+-- Table name prefix: AI_NW_SUMM_
+
+-- Note: Adjust DATABASE and SCHEMA context before running, e.g.:
+--   USE DATABASE MARICO;
+--   USE SCHEMA PROD;
+
+CREATE TABLE IF NOT EXISTS AI_NW_SUMM_USERS (
+  id VARCHAR DEFAULT UUID_STRING() PRIMARY KEY,
+  email VARCHAR NOT NULL UNIQUE,
+  hashed_password VARCHAR NOT NULL,
+  display_name VARCHAR,
+  role VARCHAR DEFAULT 'member',
+  created_at TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
+  updated_at TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+CREATE TABLE IF NOT EXISTS AI_NW_SUMM_BRIEFINGS (
+  id VARCHAR DEFAULT UUID_STRING() PRIMARY KEY,
+  user_id VARCHAR NOT NULL,
+  name VARCHAR NOT NULL,
+  description VARCHAR,
+  status VARCHAR DEFAULT 'draft',
+  prompt VARCHAR NOT NULL,
+  primary_links VARIANT,
+  created_at TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
+  updated_at TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
+  last_run_at TIMESTAMP_TZ,
+  CONSTRAINT fk_briefings_user FOREIGN KEY (user_id) REFERENCES AI_NW_SUMM_USERS(id)
+);
+
+CREATE TABLE IF NOT EXISTS AI_NW_SUMM_BRIEFING_LINKS (
+  id VARCHAR DEFAULT UUID_STRING() PRIMARY KEY,
+  briefing_id VARCHAR NOT NULL,
+  url VARCHAR NOT NULL,
+  depth_limit NUMBER DEFAULT 0,
+  notes VARCHAR,
+  created_at TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
+  CONSTRAINT fk_briefing_links_briefing FOREIGN KEY (briefing_id) REFERENCES AI_NW_SUMM_BRIEFINGS(id)
+);
+
+CREATE TABLE IF NOT EXISTS AI_NW_SUMM_AGENT_RUNS (
+  id VARCHAR DEFAULT UUID_STRING() PRIMARY KEY,
+  briefing_id VARCHAR,
+  trigger_type VARCHAR,
+  status VARCHAR,
+  started_at TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
+  completed_at TIMESTAMP_TZ,
+  error_message VARCHAR,
+  model VARCHAR,
+  token_usage_prompt NUMBER,
+  token_usage_completion NUMBER,
+  CONSTRAINT fk_agent_runs_briefing FOREIGN KEY (briefing_id) REFERENCES AI_NW_SUMM_BRIEFINGS(id)
+);
+
+CREATE TABLE IF NOT EXISTS AI_NW_SUMM_AGENT_RUN_STEPS (
+  id VARCHAR DEFAULT UUID_STRING() PRIMARY KEY,
+  agent_run_id VARCHAR NOT NULL,
+  step_order NUMBER NOT NULL,
+  name VARCHAR NOT NULL,
+  input_payload VARIANT,
+  output_payload VARIANT,
+  error VARCHAR,
+  created_at TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
+  CONSTRAINT fk_run_steps_run FOREIGN KEY (agent_run_id) REFERENCES AI_NW_SUMM_AGENT_RUNS(id)
+);
+
+CREATE TABLE IF NOT EXISTS AI_NW_SUMM_ARTICLES (
+  id VARCHAR DEFAULT UUID_STRING() PRIMARY KEY,
+  agent_run_id VARCHAR NOT NULL,
+  source_url VARCHAR NOT NULL,
+  resolved_url VARCHAR,
+  title VARCHAR,
+  author VARCHAR,
+  published_at TIMESTAMP_TZ,
+  raw_html STRING,
+  clean_text STRING,
+  extraction_confidence NUMBER(5,2),
+  created_at TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
+  CONSTRAINT fk_articles_run FOREIGN KEY (agent_run_id) REFERENCES AI_NW_SUMM_AGENT_RUNS(id)
+);
+
+CREATE TABLE IF NOT EXISTS AI_NW_SUMM_SUMMARIES (
+  id VARCHAR DEFAULT UUID_STRING() PRIMARY KEY,
+  agent_run_id VARCHAR NOT NULL,
+  briefing_id VARCHAR,
+  summary_markdown STRING,
+  bullet_points VARIANT,
+  key_quotes VARIANT,
+  citations VARIANT,
+  created_at TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
+  CONSTRAINT fk_summaries_run FOREIGN KEY (agent_run_id) REFERENCES AI_NW_SUMM_AGENT_RUNS(id),
+  CONSTRAINT fk_summaries_briefing FOREIGN KEY (briefing_id) REFERENCES AI_NW_SUMM_BRIEFINGS(id)
+);
+
+CREATE TABLE IF NOT EXISTS AI_NW_SUMM_CAMPAIGNS (
+  id VARCHAR DEFAULT UUID_STRING() PRIMARY KEY,
+  name VARCHAR NOT NULL,
+  status VARCHAR DEFAULT 'active',
+  description VARCHAR,
+  briefing_ids VARIANT,
+  recipient_emails VARIANT,
+  schedule_description VARCHAR,
+  created_at TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
+  updated_at TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+
