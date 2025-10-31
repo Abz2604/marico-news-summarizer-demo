@@ -34,23 +34,37 @@ class DateParser:
             (datetime | None, confidence: 0-1, method: str)
         """
         
-        # Strategy 1: LLM-based extraction (primary)
-        date, confidence = await self._llm_extract(html, url)
-        if date and confidence > 0.7:
-            logger.info(f"✅ Date extracted via LLM: {date} (confidence: {confidence:.2f})")
-            return date, confidence, "llm"
+        # Strategy 1: Metadata extraction (FIRST - most reliable and fast)
+        metadata_date, metadata_conf = self._extract_from_metadata(html)
+        if metadata_date and metadata_conf > 0.8:
+            logger.info(f"✅ Date extracted from metadata: {metadata_date} (confidence: {metadata_conf:.2f})")
+            return metadata_date, metadata_conf, "metadata"
         
-        # Strategy 2: Metadata extraction (fast fallback)
-        date, confidence = self._extract_from_metadata(html)
-        if date and confidence > 0.8:
-            logger.info(f"✅ Date extracted from metadata: {date} (confidence: {confidence:.2f})")
-            return date, confidence, "metadata"
+        # Strategy 2: Structured patterns in HTML text (fast)
+        pattern_date, pattern_conf = self._extract_from_patterns(html)
+        if pattern_date and pattern_conf > 0.6:
+            logger.info(f"✅ Date extracted from patterns: {pattern_date} (confidence: {pattern_conf:.2f})")
+            return pattern_date, pattern_conf, "patterns"
         
-        # Strategy 3: Structured patterns in HTML text
-        date, confidence = self._extract_from_patterns(html)
-        if date and confidence > 0.6:
-            logger.info(f"✅ Date extracted from patterns: {date} (confidence: {confidence:.2f})")
-            return date, confidence, "patterns"
+        # Strategy 3: LLM-based extraction (fallback - slower but handles edge cases)
+        llm_date, llm_conf = await self._llm_extract(html, url)
+        if llm_date and llm_conf > 0.7:
+            # 🔍 VALIDATION: If LLM date is >6 months old, cross-check with metadata
+            days_old = (datetime.now() - llm_date).days
+            if days_old > 180 and metadata_date:
+                logger.warning(f"⚠️ LLM date seems old ({days_old} days), cross-checking with metadata...")
+                # Prefer metadata if it's more recent
+                if metadata_date and (datetime.now() - metadata_date).days < days_old:
+                    logger.info(f"✅ Using metadata date {metadata_date} instead of LLM date {llm_date}")
+                    return metadata_date, metadata_conf, "metadata_validated"
+            
+            logger.info(f"✅ Date extracted via LLM: {llm_date} (confidence: {llm_conf:.2f})")
+            return llm_date, llm_conf, "llm"
+        
+        # Fallback: Use metadata even with lower confidence if available
+        if metadata_date:
+            logger.info(f"✅ Date extracted from metadata (fallback): {metadata_date} (confidence: {metadata_conf:.2f})")
+            return metadata_date, metadata_conf, "metadata_fallback"
         
         # No reliable date found
         logger.warning(f"⚠️ Could not extract date from {url[:60]}")
@@ -73,6 +87,10 @@ class DateParser:
         # Get first 1500 chars of visible text (usually has date near top)
         text_content = soup.get_text()[:1500]
         
+        today = datetime.now()
+        current_year = today.year
+        current_month = today.month
+        
         llm_prompt = f"""Extract the article publish date from the HTML content.
 
 URL: {url}
@@ -90,7 +108,12 @@ Find when this article was published. Look for:
 - Visible dates near the article title
 - Relative dates ("2 days ago", "yesterday", "1 hour ago")
 
-Today's date is: {datetime.now().strftime("%Y-%m-%d")}
+IMPORTANT CONTEXT:
+- Today's date is: {today.strftime("%Y-%m-%d")} (Current year: {current_year})
+- When the year is missing or ambiguous, prefer {current_year}
+- If month > current month ({current_month}) and no year is specified, the article is likely from {current_year - 1}
+- News articles are typically recent (within 1-2 years)
+- If you see "Oct 17" or "October 17" without a year, default to {current_year}
 
 Respond with ONLY valid JSON:
 {{
@@ -123,11 +146,20 @@ If multiple dates are present, choose the PUBLISH date (not update/modified date
             # Parse the date string
             date = datetime.strptime(date_str, "%Y-%m-%d")
             
-            # Sanity check: date should be in past and not too old (< 5 years)
+            # Sanity check: date should be in past and not too old (< 3 years for news)
             now = datetime.now()
-            if date > now or (now - date).days > 1825:  # 5 years
-                logger.warning(f"⚠️ LLM returned suspicious date: {date}")
+            days_old = (now - date).days
+            
+            # Future dates are definitely wrong
+            if date > now:
+                logger.warning(f"⚠️ LLM returned future date: {date}")
                 return None, 0.0
+            
+            # News articles >3 years old are suspicious (likely wrong year)
+            # But don't reject completely - return with lowered confidence
+            if days_old > 1095:  # 3 years
+                logger.warning(f"⚠️ LLM returned old date: {date} ({days_old} days old), lowering confidence")
+                return date, min(confidence * 0.5, 0.7)  # Reduce confidence so metadata can override
             
             return date, float(confidence)
             

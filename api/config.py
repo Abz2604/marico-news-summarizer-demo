@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     app_name: str = Field(default="Marico News Summarizer API")
     env: str = Field(default="development")
-    debug: bool = Field(default=True)
+    debug: bool = Field(default=False)
 
     # Authentication / security
     jwt_secret_key: str = Field(default="dev-secret-key")
