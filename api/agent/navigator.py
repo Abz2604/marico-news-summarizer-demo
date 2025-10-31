@@ -9,7 +9,6 @@ from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 
-from .search import bing_search_urls
 from .adapters.registry import get_adapter_for
 from .brightdata_fetcher import fetch_url
 
@@ -66,47 +65,13 @@ def _parse_possible_date(text: str) -> Optional[datetime]:
     return None
 
 
-def _moneycontrol_listing_from_seed(seed_url: str) -> Optional[str]:
-    """Construct Moneycontrol tags URL from a stock page seed (tags page works better!).
-
-    Example seed:
-      https://www.moneycontrol.com/india/stockpricequote/personal-care/marico/M13
-    Tags page:
-      https://www.moneycontrol.com/news/tags/marico.html
-    """
-
-    try:
-        parsed = urlparse(seed_url)
-        if "moneycontrol.com" not in parsed.netloc:
-            return None
-        
-        # Extract company name from various URL patterns
-        parts = [p for p in parsed.path.split("/") if p]
-        
-        # Pattern 1: /india/stockpricequote/category/COMPANY/code
-        if len(parts) >= 5 and parts[0] == "india" and parts[1] == "stockpricequote":
-            company_name = parts[3].lower()
-            return f"https://www.moneycontrol.com/news/tags/{company_name}.html"
-        
-        # Pattern 2: /company-article/COMPANY/news/code
-        if len(parts) >= 3 and parts[0] == "company-article":
-            company_name = parts[1].lower()
-            return f"https://www.moneycontrol.com/news/tags/{company_name}.html"
-        
-    except Exception:
-        return None
-    return None
+# MoneyControl-specific function removed - now using universal LLM-based context extraction
 
 
 async def discover_news_listing_url(seed_url: str) -> Optional[str]:
     """Find a news/blog listing URL from a seed page using adapter then heuristics."""
 
-    # Try MoneyControl direct listing construction FIRST (site-specific is more reliable)
-    direct = _moneycontrol_listing_from_seed(seed_url)
-    if direct:
-        logger.info(f"Using MoneyControl-specific listing URL: {direct}")
-        return direct
-
+    # Site-agnostic discovery using adapters (no hardcoded patterns)
     # Adapter-based discovery
     adapter = get_adapter_for(seed_url)
     listing = await adapter.discover_listing(seed_url)
@@ -156,14 +121,11 @@ async def discover_news_listing_url(seed_url: str) -> Optional[str]:
 async def collect_recent_article_links(listing_url: str, window_days: int = 5, limit: int = 5) -> List[str]:
     """Collect recent article links using adapter then heuristics as fallback."""
 
-    # Skip adapter for MoneyControl tags pages (heuristic works better)
-    is_moneycontrol_tags = "moneycontrol.com/news/tags/" in listing_url
-    
-    if not is_moneycontrol_tags:
-        adapter = get_adapter_for(listing_url)
-        links = await adapter.collect_article_links(listing_url, window_days=window_days, limit=limit)
-        if links:
-            return links
+    # Try adapter-based collection first (site-agnostic)
+    adapter = get_adapter_for(listing_url)
+    links = await adapter.collect_article_links(listing_url, window_days=window_days, limit=limit)
+    if links:
+        return links
 
     # Fetch listing page HTML using Bright Data
     logger.info(f"Fetching listing page: {listing_url}")
@@ -189,15 +151,12 @@ async def collect_recent_article_links(listing_url: str, window_days: int = 5, l
             continue
         # Heuristic filters for likely news articles
         if any(s in href.lower() for s in ["/news", "/newsroom", "/news-", "/news/", "/article", "/story"]):
-            # Exclude MoneyControl listing pattern without deeper path
+            # Skip obvious listing/tag pages (generic check, works for all sites)
             try:
-                parsed = urlparse(href)
-                parts = [p for p in parsed.path.split("/") if p]
-                if len(parts) >= 3 and parts[0] == "company-article" and parts[2] == "news" and len(parts) == 3:
-                    continue
-                # Skip tag pages
-                if "/tags/" in href and href.endswith(".html"):
-                    continue
+                # Skip tag/category pages
+                if "/tags/" in href or "/category/" in href or "/categories/" in href:
+                    if href.endswith(".html") or href.endswith("/"):
+                        continue
             except Exception:
                 pass
             

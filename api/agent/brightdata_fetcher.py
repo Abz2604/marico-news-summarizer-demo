@@ -7,14 +7,20 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Optional
 
 import requests
 from dotenv import load_dotenv
+import asyncio
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+# Retry configuration
+MAX_RETRIES = 5
+INITIAL_BACKOFF = 2  # seconds
 
 
 class BrightDataFetcher:
@@ -37,39 +43,69 @@ class BrightDataFetcher:
         self.api_url = "https://api.brightdata.com/request"
         logger.info(f"BrightData fetcher initialized with zone: {self.zone}")
     
-    async def fetch(self, url: str, timeout: int = 60) -> Optional[str]:
+    async def fetch(
+        self, 
+        url: str, 
+        timeout: int = 60, 
+        max_retries: int = MAX_RETRIES,
+        render_js: bool = False,
+        wait_for_selector: Optional[str] = None
+    ) -> Optional[str]:
         """
-        Fetch URL content using Bright Data Scraping Browser.
+        Fetch URL content using Bright Data with retry logic.
         
         Args:
             url: Target URL to fetch
             timeout: Request timeout in seconds
+            max_retries: Maximum number of retry attempts (default: 5)
+            render_js: Whether to render JavaScript (for dynamic content, lazy loading)
+            wait_for_selector: CSS selector to wait for before returning (e.g., ".load-more")
             
         Returns:
-            HTML content or None if failed
+            HTML content or None if failed after all retries
         """
-        logger.info(f"Fetching with BrightData: {url}")
+        logger.info(f"Fetching with BrightData: {url} (render_js={render_js})")
         
-        try:
-            import asyncio
-            
-            # Use requests in thread pool for async compatibility
-            loop = asyncio.get_event_loop()
-            html = await loop.run_in_executor(
-                None, 
-                self._fetch_sync, 
-                url, 
-                timeout
-            )
-            return html
-                    
-        except Exception as e:
-            logger.error(f"❌ Fetch failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"Attempt {attempt}/{max_retries} for {url}")
+                
+                # Use requests in thread pool for async compatibility
+                loop = asyncio.get_event_loop()
+                html = await loop.run_in_executor(
+                    None, 
+                    self._fetch_sync, 
+                    url, 
+                    timeout,
+                    render_js,
+                    wait_for_selector
+                )
+                
+                if html:
+                    logger.info(f"✅ Success on attempt {attempt}")
+                    return html
+                else:
+                    logger.warning(f"⚠️ Attempt {attempt} returned no content")
+                        
+            except Exception as e:
+                logger.error(f"❌ Attempt {attempt} failed: {e}")
+                
+            # If we have more retries left, wait with exponential backoff
+            if attempt < max_retries:
+                backoff_time = INITIAL_BACKOFF * (2 ** (attempt - 1))  # Exponential backoff: 2s, 4s, 8s, 16s
+                logger.info(f"⏱️ Waiting {backoff_time}s before retry...")
+                await asyncio.sleep(backoff_time)
+        
+        logger.error(f"❌ All {max_retries} attempts failed for {url}")
+        return None
     
-    def _fetch_sync(self, url: str, timeout: int) -> Optional[str]:
+    def _fetch_sync(
+        self, 
+        url: str, 
+        timeout: int,
+        render_js: bool = False,
+        wait_for_selector: Optional[str] = None
+    ) -> Optional[str]:
         """Synchronous fetch using Bright Data API"""
         try:
             headers = {
@@ -83,7 +119,17 @@ class BrightDataFetcher:
                 "format": "raw"  # Get raw HTML
             }
             
-            logger.info(f"Bright Data API request: zone={self.zone}, url={url}")
+            # Add JavaScript rendering if requested (for dynamic content)
+            if render_js:
+                payload["render_js"] = True
+                payload["wait"] = 3000  # Wait 3s for JS to execute
+                logger.info("🚀 JavaScript rendering enabled (for lazy-loaded content)")
+                
+                if wait_for_selector:
+                    payload["wait_for_selector"] = wait_for_selector
+                    logger.info(f"⏳ Waiting for selector: {wait_for_selector}")
+            
+            logger.info(f"Bright Data API request: zone={self.zone}, url={url}, render_js={render_js}")
             
             response = requests.post(
                 self.api_url,
@@ -148,17 +194,24 @@ def get_fetcher() -> BrightDataFetcher:
     return _fetcher
 
 
-async def fetch_url(url: str, timeout: int = 30) -> Optional[str]:
+async def fetch_url(
+    url: str, 
+    timeout: int = 30,
+    render_js: bool = False,
+    wait_for_selector: Optional[str] = None
+) -> Optional[str]:
     """
     Simple convenience function for fetching a single URL.
     
     Args:
         url: URL to fetch
         timeout: Request timeout
+        render_js: Whether to render JavaScript (for dynamic content)
+        wait_for_selector: CSS selector to wait for before returning
         
     Returns:
         HTML content or None
     """
     fetcher = get_fetcher()
-    return await fetcher.fetch(url, timeout)
+    return await fetcher.fetch(url, timeout, render_js=render_js, wait_for_selector=wait_for_selector)
 

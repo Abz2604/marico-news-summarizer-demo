@@ -19,6 +19,19 @@ class ArticleContent:
     text: str
     fetched_at: datetime
     metadata: Optional[dict] = None
+    
+    # Date intelligence (Phase 1)
+    published_date: Optional[datetime] = None
+    date_confidence: float = 0.0
+    date_extraction_method: str = "none"
+    
+    @property
+    def age_days(self) -> Optional[int]:
+        """Calculate article age in days"""
+        if self.published_date:
+            delta = datetime.now() - self.published_date
+            return delta.days
+        return None
 
 
 @dataclass
