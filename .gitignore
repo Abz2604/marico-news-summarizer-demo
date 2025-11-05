@@ -21,6 +21,7 @@
 /build
 
 /api/benv/
+/api/venv/
 
 # Python
 __pycache__/
