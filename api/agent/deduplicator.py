@@ -21,8 +21,12 @@ class Deduplicator:
     """Deduplicate articles using semantic similarity (LLM-based)"""
     
     def __init__(self, openai_api_key: str):
+        settings = get_settings()
+        model_name = settings.openai_model or "gpt-4o-mini"
+        self.enable_semantic = settings.enable_semantic_dedup
+        self.min_articles = max(1, settings.dedup_min_articles)
         self.llm = ChatOpenAI(
-            model="gpt-4o-mini",
+            model=model_name,
             temperature=0,
             api_key=openai_api_key
         )
@@ -44,7 +48,12 @@ class Deduplicator:
         if len(articles) <= 1:
             return articles
         
-        # Step 2: Semantic deduplication (LLM-based)
+        # Step 2: Semantic deduplication (LLM-based) — gated by config and size
+        if not self.enable_semantic or len(articles) < self.min_articles:
+            logger.info(
+                f"🔍 Skipping semantic dedup (enabled={self.enable_semantic}, articles={len(articles)}, min={self.min_articles})"
+            )
+            return articles
         articles = await self._semantic_dedup(articles)
         
         logger.info(f"✅ Deduplication complete: {len(articles)} unique articles")

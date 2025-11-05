@@ -1,16 +1,17 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { DEMO_BRIEFINGS, DEMO_CAMPAIGN_RECIPIENTS } from "@/lib/demo-data"
 import { SelectBriefingRow } from "@/components/forms/select-briefing-row"
 import { DeliveryTimeRow } from "@/components/forms/delivery-time-row"
 import { Mail, Layers, ArrowLeft, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { apiClient, type Briefing } from "@/lib/api-client"
+import { useToast } from "@/hooks/use-toast"
 
 interface BriefingSelection {
   id: string
@@ -25,17 +26,45 @@ const generateId = () => Math.random().toString(36).slice(2, 9)
 
 export default function NewCampaignPage() {
   const router = useRouter()
+  const { toast } = useToast()
   const [name, setName] = useState("Untitled Campaign")
   const [description, setDescription] = useState("")
-  const [recipientInput, setRecipientInput] = useState(DEMO_CAMPAIGN_RECIPIENTS.slice(0, 2).join(", "))
-  const [briefings, setBriefings] = useState<BriefingSelection[]>([{ id: DEMO_BRIEFINGS[0].id }])
+  const [recipientInput, setRecipientInput] = useState("")
+  const [briefings, setBriefings] = useState<BriefingSelection[]>([{ id: "" }])
   const [times, setTimes] = useState<TimeSelection[]>([
     { id: generateId(), time: "09:00" },
   ])
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [isSaving, setIsSaving] = useState(false)
+  const [loadingBriefings, setLoadingBriefings] = useState(true)
+  const [availableBriefings, setAvailableBriefings] = useState<Briefing[]>([])
 
-  const availableBriefings = useMemo(() => DEMO_BRIEFINGS, [])
+  // Load real briefings from API
+  useEffect(() => {
+    loadBriefings()
+  }, [])
+
+  const loadBriefings = async () => {
+    try {
+      setLoadingBriefings(true)
+      const response = await apiClient.briefings.list()
+      setAvailableBriefings(response.items)
+      
+      // Set first briefing as default if available
+      if (response.items.length > 0 && !briefings[0].id) {
+        setBriefings([{ id: response.items[0].id }])
+      }
+    } catch (error) {
+      console.error("Failed to load briefings:", error)
+      toast({
+        title: "Error loading briefings",
+        description: "Failed to fetch briefings from server",
+        variant: "destructive",
+      })
+    } finally {
+      setLoadingBriefings(false)
+    }
+  }
 
   const validate = () => {
     const newErrors: Record<string, string> = {}
@@ -54,10 +83,63 @@ export default function NewCampaignPage() {
 
   const handleSave = async () => {
     if (!validate()) return
+    
+    try {
     setIsSaving(true)
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+      
+      // Parse recipients
+      const recipients = recipientInput
+        .split(",")
+        .map((r) => r.trim())
+        .filter(Boolean)
+      
+      // Get selected briefing IDs
+      const selectedBriefingIds = briefings
+        .filter(b => b.id)
+        .map(b => b.id)
+      
+      // Create schedule description from times
+      const scheduleDesc = times.length > 0 
+        ? `Daily at ${times.map(t => t.time).filter(Boolean).join(", ")}`
+        : "Not scheduled"
+      
+      // Create campaign via API
+      const payload = {
+        name: name.trim(),
+        description: description.trim() || undefined,
+        briefing_ids: selectedBriefingIds,
+        recipient_emails: recipients,
+        schedule_description: scheduleDesc,
+        status: "active"
+      }
+      
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api"}/campaigns`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error.detail || "Failed to create campaign")
+      }
+      
+      toast({
+        title: "Campaign created!",
+        description: `"${name}" has been saved successfully.`,
+      })
+      
+      router.push("/dashboard/campaigns")
+    } catch (error) {
+      console.error("Failed to save campaign:", error)
+      toast({
+        title: "Error saving campaign",
+        description: error instanceof Error ? error.message : "Failed to save campaign",
+        variant: "destructive",
+      })
+    } finally {
     setIsSaving(false)
-    router.push("/dashboard/campaigns")
+    }
   }
 
   const handleAddBriefing = () => {

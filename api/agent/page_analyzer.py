@@ -63,7 +63,7 @@ async def analyze_page_for_content(
     
     # Extract potential navigation links (limited for token efficiency)
     nav_links = []
-    for a in soup.find_all("a", href=True)[:30]:  # First 30 links
+    for a in soup.find_all("a", href=True)[:60]:  # First 60 links (improve recall)
         href = a.get("href", "")
         text = a.get_text(strip=True)
         
@@ -79,8 +79,11 @@ async def analyze_page_for_content(
         
         # Only include if looks like navigation
         lower_text = text.lower()
-        if any(keyword in lower_text for keyword in ["news", "press", "media", "blog", "article", "stories", "updates"]):
-            nav_links.append({"text": text[:50], "url": href})
+        lower_href = href.lower()
+        if any(keyword in lower_text for keyword in ["news", "press", "media", "blog", "article", "stories", "updates"]) or any(
+            kw in lower_href for kw in ["news", "press", "newsroom", "company-article", "/media/"]
+        ):
+            nav_links.append({"text": text[:50] if text else href[:50], "url": href})
     
     # Get a sample of page text for context
     body_text = soup.get_text(separator=" ", strip=True)
@@ -122,9 +125,12 @@ PAGE CONTENT SAMPLE (first 1500 chars):
 {body_sample}
 
 TASK: Analyze this page and determine the best action.
-FOCUS: The user wants RECENT content (last 5-7 days ideally). Consider temporal relevance.
+FOCUS: The user wants RECENT content (last 5-7 days ideally). Consider temporal relevance and SUBJECT alignment.
+SUBJECT ALIGNMENT:
+- If the subject is a specific company, prefer company-specific news/press/media sections that mention the company explicitly.
+- If the subject is an industry/sector/theme, prefer pages or sections aligned to that topic (e.g., "industry", "sector", "market", "insights", "analysis", "theme"), not generic homepages.
 
-Respond with ONLY a valid JSON object (no markdown, no explanation):
+Respond with ONLY a valid JSON object (no markdown, no explanation, double quotes only):
 {{
   "page_type": "<one of: homepage, company_profile, news_listing, article, category_page, search_results, other>",
   "has_relevant_content": <true if this page contains or links to content matching user request>,
@@ -136,18 +142,23 @@ Respond with ONLY a valid JSON object (no markdown, no explanation):
   "confidence": "<high, medium, or low>"
 }}
 
-IMPORTANT RULES:
-1. If the page HAS a section with relevant article links visible, set ready_to_extract_links=true and needs_navigation=false
-2. If the page is a general page with a navigation link to news/media section, set needs_navigation=true
-3. If already on a news listing page with article links, set ready_to_extract_links=true
-4. Focus on finding ARTICLE links, not category/tag pages
-5. navigation_link must be a COMPLETE URL from the navigation links provided above
+CRITICAL DECISION RULES (follow in order):
+
+1. **Company profile / stock quote pages**: If page_type is "company_profile" or "homepage" and ANY link contains "news", "press", "media", "newsroom", or "company-article", you MUST set needs_navigation=true and navigation_link to that URL. Do NOT extract from these pages directly.
+
+2. **News listing pages**: If page_type is "news_listing" or "category_page" with many article links visible, set ready_to_extract_links=true and needs_navigation=false.
+
+3. **Single articles**: If page_type is "article", set ready_to_extract_links=false and needs_navigation=false (will be handled separately).
+
+4. **Fallback**: If unsure and navigation links exist with "news/press/media", prefer navigation over extraction.
+
+5. navigation_link must be a COMPLETE URL from the NAVIGATION LINKS list above
 """
     
     try:
-        # Use gpt-4o-mini for cost efficiency
+        model_name = settings.page_analyzer_model or settings.openai_model or "gpt-4o-mini"
         llm = ChatOpenAI(
-            model="gpt-4o-mini",
+            model=model_name,
             temperature=0,
             api_key=settings.openai_api_key
         )

@@ -119,15 +119,10 @@ class BrightDataFetcher:
                 "format": "raw"  # Get raw HTML
             }
             
-            # Add JavaScript rendering if requested (for dynamic content)
+            # JavaScript rendering: current Bright Data endpoint rejects 'render_js'.
+            # To avoid 400 validation errors, proceed without JS flags.
             if render_js:
-                payload["render_js"] = True
-                payload["wait"] = 3000  # Wait 3s for JS to execute
-                logger.info("🚀 JavaScript rendering enabled (for lazy-loaded content)")
-                
-                if wait_for_selector:
-                    payload["wait_for_selector"] = wait_for_selector
-                    logger.info(f"⏳ Waiting for selector: {wait_for_selector}")
+                logger.info("ℹ️ JS rendering requested, but API does not allow 'render_js'. Proceeding without JS rendering.")
             
             logger.info(f"Bright Data API request: zone={self.zone}, url={url}, render_js={render_js}")
             

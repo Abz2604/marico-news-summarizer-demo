@@ -22,6 +22,14 @@
 
 /api/benv/
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+
 # misc
 .DS_Store
 *.pem

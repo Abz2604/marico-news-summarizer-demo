@@ -10,6 +10,8 @@ from pydantic import BaseModel, HttpUrl
 
 from agent.graph import run_agent
 from config import get_settings
+from services import agent_service, briefings_service
+
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -27,7 +29,12 @@ class AgentRunResponse(BaseModel):
     model: str
 
 
-@router.post("/run", response_model=AgentRunResponse)
+@router.post(
+    "/run",
+    response_model=AgentRunResponse,
+    deprecated=True,
+    summary="[DEPRECATED] Use POST /briefings/{briefing_id}/run instead",
+)
 async def run_agent_endpoint(payload: AgentRunRequest):
     settings = get_settings()
     if not settings.openai_api_key:
@@ -46,6 +53,58 @@ async def run_agent_endpoint(payload: AgentRunRequest):
         logging.error("Agent run returned no result (None or error state)")
         # If we had no articles extracted, return a 422 to the client with a helpful message
         raise HTTPException(status_code=422, detail="No usable content extracted from the provided URLs. Try a different link.")
+
+    # Note: This deprecated endpoint does not save the run to the database.
+    return AgentRunResponse(
+        summary_markdown=result.summary_markdown,
+        bullet_points=result.bullet_points,
+        citations=result.citations,
+        model=result.model,
+    )
+
+
+@router.post("/briefings/{briefing_id}/run", response_model=AgentRunResponse)
+async def run_agent_for_briefing(briefing_id: str):
+    """
+    Runs the agent for a specific briefing, using its stored prompt and seed links.
+    The run and its resulting summary are saved to the database.
+    """
+    settings = get_settings()
+    if not settings.openai_api_key:
+        raise HTTPException(status_code=422, detail="OPENAI_API_KEY is not configured")
+
+    briefing = briefings_service.get_briefing_by_id(briefing_id)
+    if not briefing:
+        raise HTTPException(status_code=404, detail="Briefing not found")
+
+    logging.info(f"Starting agent run for briefing_id={briefing_id}")
+    run_record = agent_service.create_agent_run(briefing_id=briefing_id)
+
+    try:
+        result = await run_agent(
+            prompt=briefing.prompt,
+            seed_links=[str(url) for url in briefing.primary_links],
+            max_articles=10,  # This could be a parameter in the future
+        )
+    except Exception as exc:
+        logging.exception("Agent run raised exception: %s", exc)
+        # TODO: Update run record to failed status
+        raise HTTPException(status_code=500, detail="Agent run failed with exception")
+
+    if not result:
+        logging.error("Agent run returned no result")
+        # TODO: Update run record to failed status
+        raise HTTPException(status_code=422, detail="No usable content extracted from the provided URLs.")
+
+    # Save summary and finalize run
+    agent_service.save_summary_and_finalize_run(
+        run_id=run_record.id,
+        briefing_id=briefing_id,
+        summary_markdown=result.summary_markdown,
+        bullet_points=result.bullet_points,
+        citations=result.citations,
+        model=result.model,
+    )
 
     return AgentRunResponse(
         summary_markdown=result.summary_markdown,

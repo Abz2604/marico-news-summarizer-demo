@@ -259,13 +259,14 @@ PAGE: {seed_url}
 LINKS FOUND (already pre-filtered by date - only showing recent/relevant articles):
 {json.dumps(links_data, indent=2)}
 
-TASK: Return URLs of news articles that match the user's topic.
+TASK: Return URLs that best match the user's subject (which may be a company, industry/sector, or thematic topic).
 
 SIMPLE RULES:
-1. ✅ Include ANY news article about the user's topic/company
-2. ❌ Exclude: category pages, navigation menus, tag pages, video/podcast pages
+1. ✅ Include articles clearly related to the user's subject (company OR industry/sector/theme). Prefer subject-aligned links over generic ones.
+2. ✅ Prefer article/story pages over listing/category pages unless the link text is an article title.
+3. ❌ Exclude: navigation-only pages, pure tag hubs without article content, video/podcast pages.
 
-Be GENEROUS - these links are already date-filtered. Just focus on topical relevance.
+Be GENEROUS but relevant — links are already date-filtered. Focus on topical alignment.
 Return up to {max_links} URLs.
 
 Respond with ONLY a JSON array:
@@ -273,9 +274,9 @@ Respond with ONLY a JSON array:
 """
     
     try:
-        # Use gpt-4o-mini for cost efficiency (this is a simple task)
+        model_name = settings.link_extractor_model or settings.openai_model or "gpt-4o-mini"
         llm = ChatOpenAI(
-            model="gpt-4o-mini",
+            model=model_name,
             temperature=0,
             api_key=settings.openai_api_key
         )

@@ -58,12 +58,12 @@ User Prompt: {prompt}
 
 TASK: Extract the following information:
 
-1. COMPANY/ENTITY: What specific company, organization, or entity is this about?
+1. COMPANY/ENTITY (if any): Identify a specific company/organization only if clearly indicated by the URL or prompt. Otherwise leave null.
    
    Guidelines:
-   - Extract from URL structure, domain name, path components
+   - Use URL structure, domain, and path components
    - Recognize stock tickers and convert to company names
-   - Understand domain → company mapping
+   - Do NOT force a company for industry/sector/macrotopic queries
    
    Examples:
    * "bloomberg.com/quote/AAPL:US" → Apple
@@ -72,24 +72,25 @@ TASK: Extract the following information:
    * "finance.yahoo.com/quote/MRCO.NS" → Marico
    * "marico.com/investors" → Marico (official site)
    * "apple.com/newsroom" → Apple (official site)
-   * "techcrunch.com/ai-startups" → None (generic tech news)
+   * "techcrunch.com/ai-startups" → None (generic tech topic)
    * "bloomberg.com" → None (homepage, not specific)
    
-   Stock Tickers to recognize:
+   Stock tickers to recognize:
    - AAPL, AAPL:US → Apple
    - TSLA, TSLA.O → Tesla
    - MRCO.NS, MRCO:IN → Marico
    - GOOGL → Google/Alphabet
    - MSFT → Microsoft
 
-2. TOPIC: What is the user researching?
+2. TOPIC: What is the subject the user is researching?
    - If specific company: "[Company] news" or "[Company] [aspect from prompt]"
-   - If generic: extract main topic from prompt
+   - If industry/sector/theme: produce a clear topic like "EV sector funding", "Indian FMCG industry updates", "US semiconductor macro tailwinds"
    
    Examples:
    * Company: Marico, Prompt: "latest updates" → "Marico news"
    * Company: Apple, Prompt: "Q3 earnings" → "Apple Q3 earnings"
-   * Company: None, Prompt: "AI startups funding" → "AI startups funding"
+   * Generic: "AI startups funding" → "AI startups funding"
+   * Industry: "EV sector last month" → "EV sector updates"
 
 3. SOURCE_TYPE: What kind of website is this?
    Categories:
@@ -100,9 +101,9 @@ TASK: Extract the following information:
    - general_news: cnn.com, bbc.com
    - other: everything else
 
-4. IS_SPECIFIC: Is this about a specific entity (true) or general topic (false)?
+4. IS_SPECIFIC: Is this about a specific entity (true) or a general topic/industry (false)?
    - True: if you identified a company/entity
-   - False: if it's a general topic or broad category
+   - False: for industries/sectors/themes or broad topics
 
 5. CONFIDENCE: How confident are you in the extraction?
    - high: Clear indicators (ticker in URL, company in domain, obvious patterns)
@@ -114,7 +115,8 @@ CRITICAL RULES:
 - Recognize that "MRCO.NS" and "Marico" are the same entity
 - Domain "marico.com" obviously means company Marico
 - If domain IS the company (apple.com, marico.com), extract it!
-- Don't be overly conservative - use contextual clues
+- Do NOT infer a company when the prompt implies an industry/sector/theme
+- Prefer precision over guessing; leave company null when unsure
 
 Respond with ONLY valid JSON (no markdown, no explanation):
 {{
@@ -128,9 +130,9 @@ Respond with ONLY valid JSON (no markdown, no explanation):
 """
     
     try:
-        # Use gpt-4o-mini for cost efficiency
+        model_name = settings.context_extractor_model or settings.openai_model or "gpt-4o-mini"
         llm = ChatOpenAI(
-            model="gpt-4o-mini",
+            model=model_name,
             temperature=0,
             api_key=settings.openai_api_key
         )

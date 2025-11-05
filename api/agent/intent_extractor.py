@@ -45,8 +45,10 @@ class IntentExtractor:
     """
     
     def __init__(self, openai_api_key: str):
+        settings = get_settings()
+        model_name = settings.intent_extractor_model or settings.openai_model or "gpt-4o-mini"
         self.llm = ChatOpenAI(
-            model="gpt-4o-mini",  # Fast, cost-efficient, highly capable
+            model=model_name,
             temperature=0,
             api_key=openai_api_key
         )
@@ -80,48 +82,47 @@ class IntentExtractor:
         No heuristics needed!
         """
         
-        llm_prompt = f"""You are an intent extraction specialist. Parse the user's request into structured parameters.
+        llm_prompt = f"""You are an intent extraction specialist. Parse the user's request into structured parameters for an insights tool.
 
 USER REQUEST: "{prompt}"
 
-Extract these parameters:
+Extract these parameters (keep the exact keys and types):
 
-1. TIME RANGE: How far back should we search for articles?
+1. TIME RANGE: How far back should we search?
    Options: today | yesterday | last_3_days | last_5_days | last_7_days | last_14_days | last_30_days | last_60_days | last_90_days | this_week | this_month | any
    
-   Common phrases to interpret:
+   Phrase mapping examples:
    - "lately", "recent", "recently" → last_5_days
    - "today", "today's" → today
    - "this week", "past week" → this_week
    - "this month", "current month" → this_month
    - "last month", "past month", "past 30 days" → last_30_days
-   - "last 2 months", "past 2 months", "2 months" → last_60_days
-   - "last 3 months", "past 3 months", "quarter" → last_90_days
+   - "last 2 months" → last_60_days; "last 3 months"/"quarter" → last_90_days
    - "last X days" → map to appropriate enum
    - No mention → last_7_days (default)
 
 2. OUTPUT FORMAT: How should the summary be formatted?
    Options:
-   - executive_summary: 3-5 sentence overview only, no bullets (for C-suite)
-   - bullet_points: Standard categorized bullet list (default)
-   - detailed: Comprehensive analysis with 5+ points per article (for analysts)
-   - one_per_article: Single bullet per article (for quick scans)
-   - concise: Brief, high-level only 1-2 points per article (for busy users)
-   
-   Common phrases to interpret:
+   - executive_summary: 3-5 sentence overview only, no bullets
+   - bullet_points: Categorized bullet list (default)
+   - detailed: 5+ points per article, with context
+   - one_per_article: Single bullet per article
+   - concise: 1–2 high-level points per article
+
+   Phrase mapping examples:
    - "executive summary", "high level", "overview", "gist" → executive_summary
    - "brief", "short", "quick" → concise
    - "detailed", "comprehensive", "in-depth" → detailed
    - "one per article", "single bullet" → one_per_article
    - No mention → bullet_points (default)
 
-3. BULLETS PER ARTICLE: If bullet format, how many bullets per article? (integer 0-10)
+3. BULLETS PER ARTICLE: If bullet format, how many bullets per article? (integer 0–10)
    Default: 3
 
-4. INCLUDE EXECUTIVE SUMMARY: Should an executive summary be included at the end? (boolean)
+4. INCLUDE EXECUTIVE SUMMARY: Include an executive summary at the end? (boolean)
    Default: true (unless format is already executive_summary)
 
-5. MAX ARTICLES: How many articles to analyze? (integer 1-20)
+5. MAX ARTICLES: How many articles to analyze? (integer 1–20)
    Look for: "X articles", "top X", "X stories"
    Default: {max_articles}
 
@@ -137,22 +138,35 @@ Extract these parameters:
    - "CEO", "leadership", "executive" → leadership_changes
    - "regulation", "lawsuit", "legal" → regulatory_legal
 
-EXAMPLES:
-- "Summarize last 3 days of Apple news" → {{time_range: "last_3_days", output_format: "bullet_points", bullets_per_article: 3}}
-- "What's been happening with Tesla lately?" → {{time_range: "last_5_days", output_format: "bullet_points", bullets_per_article: 3}}
-- "Give me the gist of Microsoft updates" → {{time_range: "last_7_days", output_format: "executive_summary", bullets_per_article: 0}}
-- "Executive summary of Amazon earnings" → {{time_range: "last_7_days", output_format: "executive_summary", bullets_per_article: 0}}
-- "One bullet per article, last 5" → {{time_range: "last_5_days", output_format: "one_per_article", bullets_per_article: 1, max_articles: 5}}
+7. PAGE SECTION: What section of the page should we focus on? (string)
+   Options: news_listing, company_profile, article, category_page, search_results, other
+   Empty string = all sections
+   Keywords to map:
+   - "news", "articles", "updates" → news_listing
+   - "company", "profile", "about" → company_profile
+   - "article", "blog", "post" → article
+   - "category", "tag", "section" → category_page
+   - "search", "results" → search_results
+   - "forum", "discussion" → forum_page
 
-Respond with ONLY valid JSON (no markdown, no explanation):
+IMPORTANT: Do NOT assume the subject is a specific company. The user may ask about an industry, sector, market theme, geography, or cross-company topic. Reflect the subject in the free-text "topic" used downstream (outside this JSON); keep keys here unchanged.
+
+EXAMPLES (keys unchanged):
+- "Summarize last 3 days of Apple news" → {{"time_range": "last_3_days", "output_format": "bullet_points", "bullets_per_article": 3}}
+- "EV sector funding trends, last month" → {{"time_range": "last_30_days", "output_format": "bullet_points"}}
+- "Indian FMCG industry updates this week" → {{"time_range": "this_week", "output_format": "bullet_points"}}
+- "Macro tailwinds in US semiconductors, one bullet per article" → {{"output_format": "one_per_article", "bullets_per_article": 1}}
+
+Respond with ONLY valid JSON (no markdown, no trailing comments, double quotes only):
 {{
   "time_range": "last_7_days",
-  "time_range_days": 7,  // MUST match time_range: today=1, yesterday=1, last_3_days=3, last_5_days=5, last_7_days=7, last_14_days=14, last_30_days=30, last_60_days=60, last_90_days=90, this_week=7, this_month=30
+  "time_range_days": 7,
   "output_format": "bullet_points",
   "bullets_per_article": 3,
   "include_executive_summary": true,
   "max_articles": {max_articles},
   "focus_areas": [],
+  "page_section": "",
   "confidence": 0.95,
   "reasoning": "Brief explanation of what you understood"
 }}
@@ -182,6 +196,23 @@ Respond with ONLY valid JSON (no markdown, no explanation):
             focus_areas = [FocusArea(f) for f in focus_areas_str] if focus_areas_str else None
             
             extracted_max = result.get("max_articles", max_articles)
+
+            # Normalize time_range_days to match time_range to avoid LLM drift
+            tr = str(result.get("time_range", "last_7_days"))
+            normalized_days_map = {
+                "today": 0,
+                "yesterday": 1,
+                "last_3_days": 3,
+                "last_5_days": 5,
+                "last_7_days": 7,
+                "last_14_days": 14,
+                "last_30_days": 30,
+                "last_60_days": 60,
+                "last_90_days": 90,
+                "this_week": 7,
+                "this_month": 30,
+            }
+            normalized_days = normalized_days_map.get(tr, result.get("time_range_days", 7))
             
             # Smart article limit logic:
             # If user specified ONLY time range (no explicit article count), set high limit
@@ -204,7 +235,7 @@ Respond with ONLY valid JSON (no markdown, no explanation):
                 raw_prompt=prompt,
                 topic=prompt.strip(),
                 time_range=TimeRange(result.get("time_range", "last_7_days")),
-                time_range_days=result.get("time_range_days", 7),
+                time_range_days=normalized_days,
                 output_format=OutputFormat(result.get("output_format", "bullet_points")),
                 bullets_per_article=result.get("bullets_per_article", 3),
                 include_executive_summary=result.get("include_executive_summary", True),

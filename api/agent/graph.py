@@ -573,27 +573,27 @@ async def _node_summarize(state: AgentState) -> AgentState:
         format_guidance = intent.get_summarization_prompt_guidance()
         focus_filter = intent.get_focus_area_filter()
         
-        system_prompt = f"""You are an intelligent executive analyst creating customized summaries.
+        system_prompt = f"""You are an intelligent insights analyst creating customized summaries.
 
 USER'S OUTPUT PREFERENCE:
 {format_guidance}
 
-{focus_filter if focus_filter else 'SCOPE: Cover all relevant topics (Financial Performance, Market Activity, Corporate Actions, Strategic Initiatives, Leadership, Regulatory, etc.)'}
+{focus_filter if focus_filter else 'SCOPE: Cover relevant topics such as Market Trends, Industry Dynamics, Financial Performance, Corporate Actions, Product/Innovation, Leadership, and Regulatory/Legal.'}
 
 FORMATTING RULES:
-- Use markdown headers (##) for categories
+- Use markdown headers (##) for categories (e.g., ## Market Trends, ## Industry Dynamics, ## Financial Performance)
 - Each point must include citation [n] where n is the article index
-- Be factual, no speculation
-- Clear, concise language
+- Be factual, avoid speculation; synthesize across sources when appropriate
+- Clear, concise language; avoid repeating headlines
 
-IMPORTANT: Follow the user's output preference exactly!"""
+IMPORTANT: Follow the user’s output preference exactly and align to the subject (company OR industry/theme)."""
     else:
         # Fallback to default (backward compatibility)
-        system_prompt = """You are an intelligent executive analyst creating structured, categorized summaries.
+        system_prompt = """You are an intelligent insights analyst creating structured, categorized summaries.
 
 TASK: Create a comprehensive summary with these requirements:
 1. Extract 3 KEY POINTS from EACH article (not 3 total - 3 per article!)
-2. Organize points by CATEGORY (Financial Performance, Market Activity, Corporate Actions, Strategic Initiatives, etc.)
+2. Organize points by CATEGORY such as Market Trends, Industry Dynamics, Financial Performance, Market Activity, Corporate Actions, Products/Innovation, Leadership Changes, Regulatory/Legal
 3. Each point must include citation [n] where n is the article index
 4. End with a 2-3 sentence executive summary
 
@@ -602,7 +602,7 @@ FORMAT:
 - Point from article [1]
 - Point from article [2]
 
-## [Another Category]  
+## [Another Category]
 - Point from article [1]
 - Point from article [3]
 
@@ -612,7 +612,8 @@ RULES:
 ✅ 3 points per article minimum
 ✅ Factual, no speculation
 ✅ Clear categories
-✅ Every point cited"""
+✅ Every point cited
+✅ Align categories to the subject (company OR industry/theme)"""
 
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -639,9 +640,26 @@ RULES:
         logging.exception("LLM invocation failed: %s", exc)
         return state
 
-    # Extract bullets defensively (some models return markdown without strict dashes)
+    # Extract bullets defensively (handle '-', '*', '•', '–', '—', and numbered lists like '1.')
+    import re
     lines = [line.strip() for line in response.content.split("\n")]
-    bullet_points = [l if l.startswith("-") else f"- {l}" for l in lines if l and (l.startswith("-") or l.startswith("*") or l.startswith("•"))]
+    bullet_like = []
+    for l in lines:
+        if not l or l.startswith("##") or l.startswith("# "):
+            continue
+        if re.match(r"^(-|\*|•|–|—)\s+", l):
+            bullet_like.append(l)
+        elif re.match(r"^\d+\.[\)\.]?\s+", l):
+            # convert numbered list to dash bullet
+            bullet_like.append(re.sub(r"^\d+\.[\)\.]?\s+", "- ", l))
+    # Fallback: collect lines containing citation markers [n] that look like points
+    if not bullet_like:
+        for l in lines:
+            if not l or l.startswith("#"):
+                continue
+            if re.search(r"\[[0-9]+\]", l):
+                bullet_like.append(f"- {l}" if not l.startswith("-") else l)
+    bullet_points = bullet_like
 
     # Build citations with dates (Phase 1: Date Intelligence)
     citations = []

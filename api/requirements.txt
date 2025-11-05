@@ -21,3 +21,7 @@ langchain>=0.2
 langchain-openai>=0.2
 langgraph>=0.2
 
+snowflake-connector-python[pandas]
+pyarrow
+markdown
+

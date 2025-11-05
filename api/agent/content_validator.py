@@ -32,8 +32,10 @@ class ContentValidator:
     """Validate article content quality using LLM"""
     
     def __init__(self, openai_api_key: str):
+        settings = get_settings()
+        model_name = settings.content_validator_model or settings.openai_model or "gpt-4o-mini"
         self.llm = ChatOpenAI(
-            model="gpt-4o-mini",
+            model=model_name,
             temperature=0,
             api_key=openai_api_key
         )

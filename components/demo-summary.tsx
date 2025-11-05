@@ -365,12 +365,12 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
                   rel="noopener noreferrer"
                   className="flex items-start justify-between gap-3 group"
                 >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xs font-bold text-primary">{source.label}</span>
-                      <p className="text-sm font-semibold text-foreground truncate group-hover:text-primary transition-colors">
+                  <div className="flex-1">
+                    <div className="mb-1">
+                      <span className="text-xs font-bold text-primary mr-2">{source.label}</span>
+                      <span className="text-sm font-semibold text-foreground group-hover:text-primary transition-colors">
                         {source.title}
-                      </p>
+                      </span>
                     </div>
                     <div className="flex gap-2 items-center">
                       <p className="text-xs text-muted-foreground">{source.domain}</p>

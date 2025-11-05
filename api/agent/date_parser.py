@@ -20,8 +20,10 @@ class DateParser:
     """Extract publish dates from article HTML using multiple strategies"""
     
     def __init__(self, openai_api_key: str):
+        settings = get_settings()
+        model_name = settings.date_parser_model or settings.openai_model or "gpt-4o-mini"
         self.llm = ChatOpenAI(
-            model="gpt-4o-mini",
+            model=model_name,
             temperature=0,
             api_key=openai_api_key
         )
@@ -112,7 +114,7 @@ IMPORTANT CONTEXT:
 - Today's date is: {today.strftime("%Y-%m-%d")} (Current year: {current_year})
 - When the year is missing or ambiguous, prefer {current_year}
 - If month > current month ({current_month}) and no year is specified, the article is likely from {current_year - 1}
-- News articles are typically recent (within 1-2 years)
+- Content articles are typically recent (within 1-2 years)
 - If you see "Oct 17" or "October 17" without a year, default to {current_year}
 
 Respond with ONLY valid JSON:
