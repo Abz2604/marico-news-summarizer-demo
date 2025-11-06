@@ -118,7 +118,8 @@ async def run_agent_for_briefing(briefing_id: str):
 async def run_agent_stream(
     prompt: str,
     seed_links: str,  # JSON array as string
-    max_articles: int = 10  # Increased to allow more articles within time window
+    max_articles: int = 10,  # Increased to allow more articles within time window
+    target_section: str = ""  # NEW: Target section (forum, news, etc.)
 ):
     """
     Stream agent progress in real-time using Server-Sent Events (SSE).
@@ -169,6 +170,7 @@ async def run_agent_stream(
                     seed_links=seed_links_list,
                     max_articles=max_articles,
                     event_callback=event_callback,
+                    target_section=target_section,  # NEW: Pass explicit section
                 )
                 
                 if result:

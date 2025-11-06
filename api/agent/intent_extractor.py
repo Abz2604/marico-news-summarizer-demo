@@ -139,15 +139,9 @@ Extract these parameters (keep the exact keys and types):
    - "regulation", "lawsuit", "legal" → regulatory_legal
 
 7. PAGE SECTION: What section of the page should we focus on? (string)
-   Options: news_listing, company_profile, article, category_page, search_results, other
-   Empty string = all sections
-   Keywords to map:
-   - "news", "articles", "updates" → news_listing
-   - "company", "profile", "about" → company_profile
-   - "article", "blog", "post" → article
-   - "category", "tag", "section" → category_page
-   - "search", "results" → search_results
-   - "forum", "discussion" → forum_page
+   This is a free-text field - capture EXACTLY what the user mentions
+   Examples: "forum", "blog", "news", "investor relations", "hair care section", "research reports"
+   Empty string = no specific section mentioned
 
 IMPORTANT: Do NOT assume the subject is a specific company. The user may ask about an industry, sector, market theme, geography, or cross-company topic. Reflect the subject in the free-text "topic" used downstream (outside this JSON); keep keys here unchanged.
 
@@ -241,6 +235,7 @@ Respond with ONLY valid JSON (no markdown, no trailing comments, double quotes o
                 include_executive_summary=result.get("include_executive_summary", True),
                 max_articles=extracted_max,
                 focus_areas=focus_areas,
+                target_section=result.get("page_section", ""),  # NEW: Capture target section
                 confidence=result.get("confidence", 0.95),
                 ambiguities=[result.get("reasoning")] if result.get("reasoning") else None
             )

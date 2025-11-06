@@ -12,6 +12,7 @@ import { useRouter } from "next/navigation"
 interface BriefingData {
   url: string
   prompt: string
+  section?: string
 }
 
 interface CreateBriefingFormProps {
@@ -23,6 +24,7 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
   const [name, setName] = useState("")
   const [url, setUrl] = useState("")
   const [prompt, setPrompt] = useState("")
+  const [section, setSection] = useState("") // NEW: Section input
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [isLoading, setIsLoading] = useState(false)
   const [isDemoLoading, setIsDemoLoading] = useState(false)
@@ -50,6 +52,10 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
       newErrors.prompt = "Prompt is required"
     }
 
+    if (!section.trim()) {
+      newErrors.section = "Section is required"
+    }
+
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
   }
@@ -61,6 +67,7 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
       const data: BriefingData = {
         url,
         prompt,
+        section,
       }
       onBriefingChange(data)
       setIsDemoLoading(false)
@@ -83,6 +90,7 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
       const data: BriefingData = {
         url,
         prompt,
+        section,
       }
 
         const message = `✅ Briefing "${briefing.name}" saved successfully! Add it to a campaign to start sending.`
@@ -98,6 +106,7 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
         setName("")
       setUrl("")
       setPrompt("")
+      setSection("")
       setErrors({})
       onBriefingChange(null)
 
@@ -119,7 +128,7 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
     }
   }
 
-  const isFormValid = name.trim() && url.trim() && prompt.trim()
+  const isFormValid = name.trim() && url.trim() && prompt.trim() && section.trim()
 
   return (
     <Card className="h-fit shadow-sm hover:shadow-md transition-shadow duration-300">
@@ -151,10 +160,10 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
 
         {/* URL Field */}
         <div className="space-y-2 animate-in fade-in slide-in-from-top duration-300" style={{ animationDelay: "50ms" }}>
-          <label className="text-sm font-medium">News Source URL *</label>
+          <label className="text-sm font-medium">Source URL *</label>
           <Input
             type="url"
-            placeholder="https://example.com/news"
+            placeholder="https://example.com"
             value={url}
             onChange={(e) => {
               setUrl(e.target.value)
@@ -170,11 +179,38 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
           )}
         </div>
 
+        {/* Section Field - NEW */}
+        <div className="space-y-2 animate-in fade-in slide-in-from-top duration-300" style={{ animationDelay: "75ms" }}>
+          <label className="text-sm font-medium">Target Section *</label>
+          <p className="text-xs text-muted-foreground">
+            Which section should the agent look for? (e.g., "forum", "hair care section", "investor relations", "blog posts")
+          </p>
+          <Input
+            type="text"
+            placeholder="e.g., forum, news, blog, investor relations, etc."
+            value={section}
+            onChange={(e) => {
+              setSection(e.target.value)
+              if (errors.section) setErrors({ ...errors, section: "" })
+            }}
+            className="transition-all duration-200 focus:ring-2"
+          />
+          {errors.section && (
+            <div className="flex gap-2 text-sm text-destructive animate-in fade-in duration-200">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <span>{errors.section}</span>
+            </div>
+          )}
+        </div>
+
         {/* Prompt Field */}
         <div className="space-y-2 animate-in fade-in slide-in-from-top duration-300" style={{ animationDelay: "100ms" }}>
-          <label className="text-sm font-medium">Summary Prompt *</label>
+          <label className="text-sm font-medium">Insight Prompt *</label>
+          <p className="text-xs text-muted-foreground">
+            What insights or information are you looking for?
+          </p>
           <textarea
-            placeholder="e.g., Summarize the top 5 tech news stories in bullet points"
+            placeholder="e.g., Summarize discussions about the company in the last month, or Find recent product launches and market reactions"
             value={prompt}
             onChange={(e) => {
               setPrompt(e.target.value)

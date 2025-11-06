@@ -74,6 +74,7 @@ class UserIntent:
     # Content filters
     max_articles: int = 3  # How many articles to analyze
     focus_areas: Optional[List[FocusArea]] = None  # None = all topics
+    target_section: str = ""  # Which page section to focus on (forum_page, news_listing, etc.)
     
     # Quality preferences
     min_article_length: int = 150  # Minimum words
@@ -94,6 +95,7 @@ class UserIntent:
             "include_executive_summary": self.include_executive_summary,
             "max_articles": self.max_articles,
             "focus_areas": [f.value for f in (self.focus_areas or [])],
+            "target_section": self.target_section,
             "confidence": self.confidence,
             "ambiguities": self.ambiguities or []
         }

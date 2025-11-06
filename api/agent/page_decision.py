@@ -1,0 +1,364 @@
+"""
+LLM-Based Page Analysis and Decision Making
+
+This module replaces rule-based page analysis with LLM-driven decisions.
+The LLM decides at each navigation step what action to take.
+"""
+
+import json
+import logging
+from typing import Dict, List, Optional
+from dataclasses import dataclass
+from enum import Enum
+
+from bs4 import BeautifulSoup
+from langchain_openai import ChatOpenAI
+from config import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+class PageAction(str, Enum):
+    """Actions the agent can take on a page"""
+    EXTRACT_CONTENT = "EXTRACT_CONTENT"  # This page has content to extract
+    EXTRACT_LINKS = "EXTRACT_LINKS"      # This page lists content (need to go deeper)
+    NAVIGATE_TO = "NAVIGATE_TO"          # Navigate to a specific section
+    STOP = "STOP"                        # Dead end or irrelevant
+
+
+@dataclass
+class PageDecision:
+    """Decision about what to do with a page"""
+    action: PageAction
+    reasoning: str
+    confidence: float  # 0.0 to 1.0
+    page_type: str  # article, forum_thread, forum_listing, news_listing, company_profile, other
+    target_url: Optional[str] = None  # Only if action=NAVIGATE_TO
+    contains_relevant_content: bool = False
+
+
+def extract_all_links(html: str, base_url: str) -> List[Dict[str, str]]:
+    """
+    Extract ALL actual links from HTML page.
+    This constrains the LLM to only choose from real links.
+    
+    Returns:
+        List of dicts with 'url', 'text', and 'href'
+    """
+    from urllib.parse import urljoin, urlparse
+    
+    soup = BeautifulSoup(html, 'html.parser')
+    links = []
+    seen_urls = set()
+    
+    for a_tag in soup.find_all('a', href=True):
+        href = a_tag.get('href', '').strip()
+        text = a_tag.get_text(strip=True)
+        
+        # Skip empty, javascript, or fragment-only links
+        if not href or href.startswith('#') or href.startswith('javascript:'):
+            continue
+        
+        # Make absolute URL
+        try:
+            absolute_url = urljoin(base_url, href)
+            parsed = urlparse(absolute_url)
+            
+            # Skip if not http/https
+            if parsed.scheme not in ['http', 'https']:
+                continue
+            
+            # Deduplicate
+            if absolute_url in seen_urls:
+                continue
+            
+            seen_urls.add(absolute_url)
+            links.append({
+                'url': absolute_url,
+                'text': text[:100] if text else '',  # Truncate long text
+                'href': href
+            })
+        except Exception as e:
+            logger.debug(f"Failed to process link: {href} - {e}")
+            continue
+    
+    logger.info(f"📎 Extracted {len(links)} actual links from page")
+    return links
+
+
+def clean_html_for_llm(html: str, max_chars: int = 10000) -> str:
+    """
+    Clean and truncate HTML for LLM consumption.
+    Remove noise, keep structure hints.
+    """
+    soup = BeautifulSoup(html, 'html.parser')
+    
+    # Remove noise
+    for tag in soup(['script', 'style', 'noscript', 'iframe', 'img', 'svg']):
+        tag.decompose()
+    
+    # Get text with minimal structure
+    text = soup.get_text(separator='\n', strip=True)
+    
+    # Truncate
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n... (truncated)"
+    
+    return text
+
+
+async def analyze_and_decide(
+    html: str,
+    url: str,
+    intent: Dict,  # From UserIntent.to_dict()
+    depth: int,
+    max_depth: int = 3
+) -> PageDecision:
+    """
+    Analyze a page and decide what action to take.
+    
+    This is the CORE decision-making function that replaces all navigation logic.
+    
+    Args:
+        html: Page HTML content
+        url: Page URL
+        intent: User intent dict with topic, target_section, time_range, etc.
+        depth: Current navigation depth
+        max_depth: Maximum allowed depth
+        
+    Returns:
+        PageDecision with action to take
+    """
+    settings = get_settings()
+    
+    # Extract actual links for validation
+    available_links = extract_all_links(html, url)
+    
+    # Clean HTML for LLM
+    cleaned_html = clean_html_for_llm(html, max_chars=8000)
+    
+    # Get page title
+    soup = BeautifulSoup(html, 'html.parser')
+    title_tag = soup.find('title')
+    page_title = title_tag.get_text(strip=True) if title_tag else "No title"
+    
+    # Build link list for prompt
+    link_list = "\n".join([
+        f"  - [{link['text'][:60] if link['text'] else 'No text'}] → {link['url']}"
+        for link in available_links[:100]  # Max 100 links in prompt
+    ])
+    
+    if not link_list:
+        link_list = "(No links found on page)"
+    
+    # Build LLM prompt
+    topic = intent.get('topic', '')
+    target_section = intent.get('target_section', '')
+    time_range_days = intent.get('time_range_days', 7)
+    
+    prompt = f"""You are a web navigation assistant helping extract content matching user intent.
+
+USER INTENT:
+- Looking for: {topic}
+- Target section: {target_section or '(any section)'}
+- Time range: Last {time_range_days} days
+
+CURRENT PAGE:
+- URL: {url}
+- Navigation depth: {depth}/{max_depth}
+- Title: {page_title}
+
+AVAILABLE LINKS (you can ONLY choose from these):
+{link_list}
+
+PAGE CONTENT (first 8000 chars):
+{cleaned_html}
+
+TASK: Decide what action to take with this page.
+
+DECISION OPTIONS:
+
+1. EXTRACT_CONTENT
+   Use when: This page contains the ACTUAL content user wants (articles, forum posts, discussion threads)
+   Example: An article page, a forum thread with multiple posts, a blog post
+   
+2. EXTRACT_LINKS
+   Use when: This page is a LISTING/DIRECTORY of content (but not the content itself)
+   Example: News listing page, forum thread index, category page, search results
+   Note: A "listing of threads" is NOT content - you need to go into individual threads
+   
+3. NAVIGATE_TO
+   Use when: This page is a hub/profile and you can see a specific section/link that leads to what user wants
+   Example: Company profile with a "News" tab, homepage with "Forum" section
+   Important: You must choose a URL from AVAILABLE LINKS above
+   
+4. STOP
+   Use when: This page is irrelevant, dead-end, or we've reached max depth
+
+CRITICAL DEPTH-BASED RULES:
+- **Current depth is {depth} out of max {max_depth}**
+- At depth 0-1: You can NAVIGATE_TO sections or EXTRACT_LINKS from listing pages
+- At depth 2+: You should ONLY use EXTRACT_CONTENT or STOP
+  → If you're on an individual article/post/thread page at depth 2+, DO NOT try to navigate further
+  → DO NOT use NAVIGATE_TO or EXTRACT_LINKS when you're already on individual content pages
+  → Your job at depth 2+ is to extract the content from THIS page, not navigate elsewhere
+
+CRITICAL THINKING RULES:
+- If target_section is specified, look for sections/links that semantically match that description
+  Examples: "forum" → forum/discussions/community, "hair care" → hair/haircare sections, 
+            "investor relations" → IR/investors sections, "blog" → blog/posts sections
+- Understand the target_section flexibly - use your intelligence to find semantically related sections
+- A "listing" page is NOT content - you need to go into individual items (threads, articles, posts, etc.)
+- Don't extract everything - be selective based on user intent and target_section
+- ONLY choose URLs that exist in AVAILABLE LINKS (no hallucinations!)
+- If depth >= 2, focus on extracting content from the current page, not navigating further
+
+OUTPUT FORMAT (JSON only, no markdown):
+{{
+  "action": "EXTRACT_CONTENT" | "EXTRACT_LINKS" | "NAVIGATE_TO" | "STOP",
+  "reasoning": "Explain your decision in 1-2 sentences",
+  "confidence": 0.85,
+  "page_type": "article" | "forum_thread" | "forum_listing" | "content_listing" | "blog_post" | "press_release" | "research_report" | "event_page" | "company_profile" | "other",
+  "target_url": "full URL from AVAILABLE LINKS (only if action=NAVIGATE_TO, otherwise null)",
+  "contains_relevant_content": true/false
+}}"""
+    
+    try:
+        # Use GPT-4o for complex reasoning
+        llm = ChatOpenAI(
+            model="gpt-4o",
+            api_key=settings.openai_api_key,
+            temperature=0
+        )
+        
+        response = await llm.ainvoke(prompt)
+        response_text = response.content.strip()
+        
+        # Handle markdown code blocks
+        if response_text.startswith("```"):
+            lines = response_text.split("\n")
+            json_lines = []
+            in_block = False
+            for line in lines:
+                if line.startswith("```"):
+                    in_block = not in_block
+                    continue
+                if in_block or (not line.startswith("```")):
+                    json_lines.append(line)
+            response_text = "\n".join(json_lines)
+        
+        result = json.loads(response_text)
+        
+        # Validate action
+        action = PageAction(result['action'])
+        
+        # Validate target_url if NAVIGATE_TO
+        target_url = result.get('target_url')
+        if action == PageAction.NAVIGATE_TO:
+            if not target_url:
+                logger.warning("LLM chose NAVIGATE_TO but no target_url provided, changing to STOP")
+                action = PageAction.STOP
+            else:
+                # Check if URL exists in available links
+                available_urls = {link['url'] for link in available_links}
+                if target_url not in available_urls:
+                    logger.warning(f"LLM chose non-existent URL: {target_url[:100]}")
+                    logger.warning(f"Available URLs count: {len(available_urls)}")
+                    # Try to find close match
+                    target_url = _find_closest_link(target_url, available_links)
+                    if not target_url:
+                        logger.warning("No close match found, changing action to STOP")
+                        action = PageAction.STOP
+        
+        decision = PageDecision(
+            action=action,
+            reasoning=result.get('reasoning', 'No reasoning provided'),
+            confidence=float(result.get('confidence', 0.5)),
+            page_type=result.get('page_type', 'other'),
+            target_url=target_url,
+            contains_relevant_content=bool(result.get('contains_relevant_content', False))
+        )
+        
+        logger.info(f"🤖 Decision: {decision.action.value} (confidence: {decision.confidence:.2f})")
+        logger.info(f"   Reasoning: {decision.reasoning}")
+        
+        return decision
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"LLM returned invalid JSON: {e}")
+        logger.error(f"Response: {response_text[:300]}")
+        # Fallback to STOP
+        return PageDecision(
+            action=PageAction.STOP,
+            reasoning="Failed to parse LLM response",
+            confidence=0.0,
+            page_type="other"
+        )
+    
+    except Exception as e:
+        logger.error(f"Page decision failed: {e}")
+        # Fallback to STOP
+        return PageDecision(
+            action=PageAction.STOP,
+            reasoning=f"Error: {str(e)}",
+            confidence=0.0,
+            page_type="other"
+        )
+
+
+def _find_closest_link(target_url: str, available_links: List[Dict[str, str]]) -> Optional[str]:
+    """
+    Find the closest matching link if LLM hallucinates a URL.
+    Uses simple string similarity.
+    """
+    if not available_links:
+        return None
+    
+    # Try exact match first
+    for link in available_links:
+        if link['url'] == target_url:
+            return link['url']
+    
+    # Try domain + path match
+    from urllib.parse import urlparse
+    try:
+        target_parsed = urlparse(target_url)
+        target_path = target_parsed.path.lower()
+        
+        for link in available_links:
+            link_parsed = urlparse(link['url'])
+            link_path = link_parsed.path.lower()
+            
+            # If paths are very similar
+            if target_path and link_path and target_path in link_path:
+                logger.info(f"Found close match: {link['url']}")
+                return link['url']
+    except Exception:
+        pass
+    
+    return None
+
+
+def normalize_url(url: str) -> str:
+    """
+    Normalize URL for cycle detection.
+    Removes fragments, trailing slashes, makes lowercase.
+    """
+    from urllib.parse import urlparse, urlunparse
+    
+    try:
+        parsed = urlparse(url)
+        # Remove fragment, normalize path
+        path = parsed.path.rstrip('/')
+        normalized = urlunparse((
+            parsed.scheme.lower(),
+            parsed.netloc.lower(),
+            path,
+            parsed.params,
+            parsed.query,
+            ''  # Remove fragment
+        ))
+        return normalized
+    except Exception:
+        return url.lower()
+

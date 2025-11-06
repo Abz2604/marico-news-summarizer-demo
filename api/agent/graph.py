@@ -24,6 +24,7 @@ from .intent_extractor import extract_intent
 from .date_parser import extract_article_date
 from .content_validator import validate_content
 from .deduplicator import deduplicate_articles
+from .smart_navigator import run_smart_navigation
 
 
 class AgentState(Dict[str, Any]):
@@ -544,6 +545,91 @@ async def _node_fetch(state: AgentState) -> AgentState:
     return state
 
 
+async def _node_smart_navigate_and_fetch(state: AgentState) -> AgentState:
+    """
+    NEW: Smart navigation using LLM-driven decisions.
+    Replaces _node_navigate + _node_fetch with recursive intelligent navigation.
+    """
+    _emit(state, {"event": "smart_nav:init"})
+    
+    # Get seed links
+    raw_links = state.get("seed_links", [])
+    seed_urls: List[str] = []
+    for item in raw_links:
+        if isinstance(item, SeedLink):
+            seed_urls.append(item.url)
+        elif isinstance(item, dict) and item.get("url"):
+            seed_urls.append(str(item.get("url")))
+        elif isinstance(item, str):
+            seed_urls.append(item)
+    
+    if not seed_urls:
+        state["error"] = {"code": "no_seeds", "message": "No seed URLs provided"}
+        _emit(state, {"event": "smart_nav:no_seeds"})
+        return state
+    
+    # Get intent and max_articles
+    intent = state.get("intent")
+    if not intent:
+        state["error"] = {"code": "no_intent", "message": "Intent not extracted"}
+        _emit(state, {"event": "smart_nav:no_intent"})
+        return state
+    
+    max_articles = state.get("max_articles", 10)
+    intent_dict = intent.to_dict() if hasattr(intent, 'to_dict') else intent
+    
+    logger.info(f"🚀 Starting smart navigation: {len(seed_urls)} seed(s), target: {max_articles} articles")
+    _emit(state, {
+        "event": "smart_nav:start",
+        "seed_count": len(seed_urls),
+        "max_articles": max_articles,
+        "target_section": intent_dict.get('target_section', '')
+    })
+    
+    # Run smart navigation
+    try:
+        # Create callback for event emission
+        def emit_callback(event: dict):
+            _emit(state, event)
+        
+        collected = await run_smart_navigation(
+            seed_urls=seed_urls,
+            intent=intent_dict,
+            max_articles=max_articles,
+            emit_callback=emit_callback
+        )
+        
+        logger.info(f"✅ Smart navigation collected {len(collected)} articles")
+        
+        # Deduplicate
+        if len(collected) > 1:
+            _emit(state, {"event": "dedup:start", "count": len(collected)})
+            collected = await deduplicate_articles(collected)
+            _emit(state, {"event": "dedup:complete", "unique_count": len(collected)})
+        
+        # Check if we got any content
+        if not collected:
+            state["error"] = {
+                "code": "no_articles",
+                "message": "Smart navigation could not extract usable content from the provided URLs."
+            }
+            _emit(state, {"event": "smart_nav:no_articles"})
+            return state
+        
+        state["articles"] = collected
+        _emit(state, {"event": "smart_nav:success", "articles": len(collected)})
+        
+    except Exception as e:
+        logger.error(f"Smart navigation failed: {e}", exc_info=True)
+        state["error"] = {
+            "code": "smart_nav_error",
+            "message": f"Smart navigation failed: {str(e)}"
+        }
+        _emit(state, {"event": "smart_nav:error", "message": str(e)})
+    
+    return state
+
+
 async def _node_summarize(state: AgentState) -> AgentState:
     if state.get("error"):
         return state
@@ -718,11 +804,18 @@ async def run_agent(
     prompt: str, 
     seed_links: List[str], 
     max_articles: int = 10,  # Increased from 3 to allow more articles within time window
-    event_callback: Optional[callable] = None
+    event_callback: Optional[callable] = None,
+    use_smart_navigation: bool = True,  # NEW: Enable smart LLM-based navigation
+    target_section: str = ""  # NEW: Explicit section override (forum, news, etc.)
 ) -> Optional[SummaryResult]:
     # 🎯 STEP 0: Extract User Intent (NEW in Phase 0)
     # Understand what the user wants: format, timeframe, focus areas
     intent = await extract_intent(prompt, max_articles)
+    
+    # Override target_section if explicitly provided
+    if target_section:
+        intent.target_section = target_section
+        logger.info(f"🎯 Target section explicitly set to: {target_section}")
     
     logger.info(f"📋 Extracted Intent: {intent.to_dict()}")
     
@@ -743,8 +836,17 @@ async def run_agent(
     }
 
     state = await _node_init(state)
-    state = await _node_navigate(state)
-    state = await _node_fetch(state)
+    
+    # Choose navigation strategy
+    if use_smart_navigation:
+        logger.info("🧠 Using SMART NAVIGATION (LLM-driven)")
+        # Smart navigation replaces both navigate and fetch nodes
+        state = await _node_smart_navigate_and_fetch(state)
+    else:
+        logger.info("📜 Using LEGACY NAVIGATION (rule-based)")
+        state = await _node_navigate(state)
+        state = await _node_fetch(state)
+    
     state = await _node_summarize(state)
     state = await _node_finalize(state)
 
