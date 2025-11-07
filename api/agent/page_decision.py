@@ -86,7 +86,7 @@ def extract_all_links(html: str, base_url: str) -> List[Dict[str, str]]:
     return links
 
 
-def clean_html_for_llm(html: str, max_chars: int = 10000) -> str:
+def clean_html_for_llm(html: str, max_chars: int = 30000) -> str:
     """
     Clean and truncate HTML for LLM consumption.
     Remove noise, keep structure hints.
@@ -156,72 +156,146 @@ async def analyze_and_decide(
     target_section = intent.get('target_section', '')
     time_range_days = intent.get('time_range_days', 7)
     
-    prompt = f"""You are a web navigation assistant helping extract content matching user intent.
+    prompt = f"""You are an expert web navigation strategist with deep understanding of information architecture and content discovery.
 
-USER INTENT:
-- Looking for: {topic}
-- Target section: {target_section or '(any section)'}
-- Time range: Last {time_range_days} days
+═══════════════════════════════════════════════════════════════════════════════
+📋 MISSION
+═══════════════════════════════════════════════════════════════════════════════
+User wants: {topic}
+Target section: {target_section or '(any section - use your judgment)'}
+Time sensitivity: Last {time_range_days} days (recent content only!)
 
-CURRENT PAGE:
-- URL: {url}
-- Navigation depth: {depth}/{max_depth}
-- Title: {page_title}
+═══════════════════════════════════════════════════════════════════════════════
+📍 CURRENT SITUATION
+═══════════════════════════════════════════════════════════════════════════════
+URL: {url}
+Title: {page_title}
+Navigation depth: {depth}/{max_depth} (deeper = more focused)
 
-AVAILABLE LINKS (you can ONLY choose from these):
+═══════════════════════════════════════════════════════════════════════════════
+🔗 AVAILABLE ACTIONS & LINKS
+═══════════════════════════════════════════════════════════════════════════════
 {link_list}
 
-PAGE CONTENT (first 8000 chars):
+═══════════════════════════════════════════════════════════════════════════════
+📄 PAGE CONTENT SAMPLE
+═══════════════════════════════════════════════════════════════════════════════
 {cleaned_html}
 
-TASK: Decide what action to take with this page.
+═══════════════════════════════════════════════════════════════════════════════
+🎯 YOUR TASK: STRATEGIC DECISION-MAKING
+═══════════════════════════════════════════════════════════════════════════════
 
-DECISION OPTIONS:
+Use CHAIN-OF-THOUGHT reasoning:
 
-1. EXTRACT_CONTENT
-   Use when: This page contains the ACTUAL content user wants (articles, forum posts, discussion threads)
-   Example: An article page, a forum thread with multiple posts, a blog post
-   
-2. EXTRACT_LINKS
-   Use when: This page is a LISTING/DIRECTORY of content (but not the content itself)
-   Example: News listing page, forum thread index, category page, search results
-   Note: A "listing of threads" is NOT content - you need to go into individual threads
-   
-3. NAVIGATE_TO
-   Use when: This page is a hub/profile and you can see a specific section/link that leads to what user wants
-   Example: Company profile with a "News" tab, homepage with "Forum" section
-   Important: You must choose a URL from AVAILABLE LINKS above
-   
-4. STOP
-   Use when: This page is irrelevant, dead-end, or we've reached max depth
+Step 1: ANALYZE THE PAGE
+- What type of page is this? (hub, listing, content, profile, etc.)
+- Does it contain the END GOAL content or is it a waypoint?
+- What patterns do you see in the links and content structure?
 
-CRITICAL DEPTH-BASED RULES:
-- **Current depth is {depth} out of max {max_depth}**
-- At depth 0-1: You can NAVIGATE_TO sections or EXTRACT_LINKS from listing pages
-- At depth 2+: You should ONLY use EXTRACT_CONTENT or STOP
-  → If you're on an individual article/post/thread page at depth 2+, DO NOT try to navigate further
-  → DO NOT use NAVIGATE_TO or EXTRACT_LINKS when you're already on individual content pages
-  → Your job at depth 2+ is to extract the content from THIS page, not navigate elsewhere
+Step 2: ASSESS RELEVANCE TO USER INTENT
+- Does this page match what user is looking for?
+- If target_section specified, does this page relate to it?
+- Are we getting closer or further from the goal?
 
-CRITICAL THINKING RULES:
-- If target_section is specified, look for sections/links that semantically match that description
-  Examples: "forum" → forum/discussions/community, "hair care" → hair/haircare sections, 
-            "investor relations" → IR/investors sections, "blog" → blog/posts sections
-- Understand the target_section flexibly - use your intelligence to find semantically related sections
-- A "listing" page is NOT content - you need to go into individual items (threads, articles, posts, etc.)
-- Don't extract everything - be selective based on user intent and target_section
-- ONLY choose URLs that exist in AVAILABLE LINKS (no hallucinations!)
-- If depth >= 2, focus on extracting content from the current page, not navigating further
+Step 3: CONSIDER NAVIGATION DEPTH **CRITICAL**
+- Current depth: {depth}/{max_depth}
 
-OUTPUT FORMAT (JSON only, no markdown):
+**DEPTH-BASED RULES (MUST FOLLOW):**
+
+DEPTH 0-1 (Exploration):
+- Can use NAVIGATE_TO to find better sections
+- Can use EXTRACT_LINKS if on a listing page
+- Goal: Find the right listing page
+
+DEPTH 2+ (Extraction ONLY):
+- **FORBIDDEN**: NAVIGATE_TO (already deep enough!)
+- **ALLOWED**: EXTRACT_CONTENT (if individual article/post)
+- **ALLOWED**: STOP (if irrelevant)
+- **FORBIDDEN**: EXTRACT_LINKS (too deep for more listings)
+- Rule: At depth 2+, you're iterating through a list from depth 1. Extract or skip, don't navigate!
+
+Step 4: CHOOSE OPTIMAL ACTION
+
+ACTION OPTIONS:
+
+1. **EXTRACT_CONTENT** ← Use when you're on a page WITH the actual information
+   ✓ Individual article with full text
+   ✓ Forum thread with discussion posts
+   ✓ Blog post with complete content
+   ✓ Press release with full details
+   ✗ NOT for: Navigation pages, directories, listings, tables of contents
+
+2. **EXTRACT_LINKS** ← Use when you're on a DIRECTORY of content
+   ✓ News listing page showing multiple articles
+   ✓ Forum board showing thread titles
+   ✓ Category page with links to posts
+   ✓ Search results page
+   ✗ NOT for: Individual content pages (those should be EXTRACT_CONTENT)
+   ⚠️  CRITICAL: A "list of threads" needs deeper navigation - go INTO the threads
+
+3. **NAVIGATE_TO** ← Use when you need to reach a better section FIRST
+   ✓ Homepage → "News Section" link
+   ✓ Company profile → "Press Releases" link
+   ✓ Generic page → "Forum" or "Blog" section
+   ⚠️  Must select URL from AVAILABLE ACTIONS list above
+   ⚠️  Best at depth 0-1, avoid at depth 2+
+
+4. **STOP** ← Use when path is not productive
+   ✓ Reached max depth without finding content
+   ✓ Page is completely irrelevant
+   ✓ Dead end (no useful links forward)
+
+═══════════════════════════════════════════════════════════════════════════════
+🧠 ADVANCED REASONING GUIDELINES
+═══════════════════════════════════════════════════════════════════════════════
+
+**Semantic Understanding:**
+If target_section = "forum" → look for: forum, community, discussions, Q&A, talk
+If target_section = "news" → look for: news, press, media, newsroom, updates, announcements
+If target_section = "blog" → look for: blog, insights, articles, stories, posts
+If target_section = "investor" → look for: investor, IR, shareholder, financial reports
+
+**Pattern Recognition:**
+- URLs with dates → likely individual articles (EXTRACT_CONTENT)
+- URLs with /page/ or /p/ → pagination pages (EXTRACT_LINKS)
+- URLs with /category/ or /tag/ → directory pages (NAVIGATE_TO or EXTRACT_LINKS)
+- URLs with /thread/ or /post/ → individual content (EXTRACT_CONTENT)
+
+**Quality Signals:**
+High confidence (>0.8) when:
+- Page type clearly matches one action
+- Links are obviously relevant to user intent
+- Content structure is straightforward
+
+Lower confidence (<0.6) when:
+- Ambiguous page structure
+- Mixed content types
+- Unclear if we're at the right depth
+
+**Decision Quality Checklist:**
+✓ Will this action get user closer to their goal?
+✓ Am I respecting depth constraints? (don't navigate at depth 2+)
+✓ If NAVIGATE_TO: Is the target URL actually in the available links?
+✓ If EXTRACT_LINKS: Am I on a listing page, not individual content?
+✓ If EXTRACT_CONTENT: Does this page have the actual information user wants?
+
+═══════════════════════════════════════════════════════════════════════════════
+📤 OUTPUT FORMAT
+═══════════════════════════════════════════════════════════════════════════════
+
+Return ONLY valid JSON (no markdown, no comments):
+
 {{
   "action": "EXTRACT_CONTENT" | "EXTRACT_LINKS" | "NAVIGATE_TO" | "STOP",
-  "reasoning": "Explain your decision in 1-2 sentences",
-  "confidence": 0.85,
+  "reasoning": "2-3 sentence explanation of your chain-of-thought decision",
+  "confidence": 0.95,
   "page_type": "article" | "forum_thread" | "forum_listing" | "content_listing" | "blog_post" | "press_release" | "research_report" | "event_page" | "company_profile" | "other",
-  "target_url": "full URL from AVAILABLE LINKS (only if action=NAVIGATE_TO, otherwise null)",
+  "target_url": "full URL from AVAILABLE ACTIONS (only if NAVIGATE_TO, else null)",
   "contains_relevant_content": true/false
-}}"""
+}}
+
+Think strategically. Think like an expert information architect. Make the decision that best serves the user's goal."""
     
     try:
         # Use GPT-4o for complex reasoning
@@ -251,6 +325,22 @@ OUTPUT FORMAT (JSON only, no markdown):
         
         # Validate action
         action = PageAction(result['action'])
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # ENFORCE DEPTH-BASED RULES (Don't trust LLM blindly!)
+        # ═══════════════════════════════════════════════════════════════════
+        if depth >= 2:
+            # At depth 2+, only EXTRACT_CONTENT or STOP are allowed
+            if action == PageAction.NAVIGATE_TO:
+                logger.warning(f"⚠️ LLM chose NAVIGATE_TO at depth {depth} (forbidden!), forcing STOP")
+                logger.warning(f"   Original reasoning: {result.get('reasoning', 'N/A')}")
+                action = PageAction.STOP
+                result['reasoning'] = f"Depth {depth} reached - no more navigation allowed"
+            elif action == PageAction.EXTRACT_LINKS:
+                logger.warning(f"⚠️ LLM chose EXTRACT_LINKS at depth {depth} (too deep!), forcing STOP")
+                logger.warning(f"   Original reasoning: {result.get('reasoning', 'N/A')}")
+                action = PageAction.STOP  
+                result['reasoning'] = f"Depth {depth} reached - too deep for link extraction"
         
         # Validate target_url if NAVIGATE_TO
         target_url = result.get('target_url')

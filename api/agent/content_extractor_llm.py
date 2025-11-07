@@ -19,6 +19,7 @@ import re
 from bs4 import BeautifulSoup
 from langchain_openai import ChatOpenAI
 from config import get_settings
+from .focus_agent import extract_focused_content
 
 logger = logging.getLogger(__name__)
 
@@ -196,8 +197,26 @@ async def extract_content_with_llm(
     """
     settings = get_settings()
     
-    # Clean HTML
-    cleaned_html = clean_html_for_extraction(html, max_chars=15000)
+    # ═════════════════════════════════════════════════════════════════════════
+    # FOCUSAGENT PATTERN: Pre-filter content to reduce tokens by 50-70%
+    # ═════════════════════════════════════════════════════════════════════════
+    # Stage 1: Lightweight LLM extracts ONLY relevant chunks (CHEAP)
+    # Stage 2: GPT-4o processes focused content (EXPENSIVE but on less data)
+    # ═════════════════════════════════════════════════════════════════════════
+    
+    try:
+        focused_content, original_size = await extract_focused_content(
+            html=html,
+            url=url,
+            intent=intent,
+            max_chunks=10
+        )
+        cleaned_html = focused_content
+        logger.info(f"✨ FocusAgent: Using focused content ({len(focused_content)} chars from {original_size} bytes)")
+    except Exception as e:
+        logger.warning(f"FocusAgent failed, using standard cleaning: {e}")
+        # Fallback to standard cleaning
+        cleaned_html = clean_html_for_extraction(html, max_chars=15000)
     
     # Get page title from HTML
     soup = BeautifulSoup(html, 'html.parser')
@@ -207,60 +226,130 @@ async def extract_content_with_llm(
     # Build extraction prompt based on page type
     topic = intent.get('topic', '')
     
-    prompt = f"""Extract the main content from this page.
+    prompt = f"""You are an expert content extraction specialist with deep understanding of web content structures.
 
+═══════════════════════════════════════════════════════════════════════════════
+🎯 MISSION: COMPREHENSIVE CONTENT EXTRACTION
+═══════════════════════════════════════════════════════════════════════════════
 PAGE TYPE: {page_type}
 URL: {url}
-USER LOOKING FOR: {topic}
+USER'S GOAL: {topic}
 
-EXTRACTION RULES:
+═══════════════════════════════════════════════════════════════════════════════
+📋 EXTRACTION STRATEGY BY CONTENT TYPE
+═══════════════════════════════════════════════════════════════════════════════
 
-If this is a FORUM THREAD or DISCUSSION:
-- Extract ALL posts/comments with:
-  - Username (who said it)
-  - Post date (if visible)
-  - Post content
-- Preserve conversation flow
-- Format: "Username (Date): Post content"
+**FORUM THREAD or DISCUSSION:**
+Goal: Capture the complete conversation
+✓ Extract EVERY post/comment (don't summarize!)
+✓ Format: "Username (Date): Post content"
+✓ Preserve chronological order
+✓ Include quoted text if it adds context
+✓ Note: Forums are multi-voice - capture all perspectives
+Example output:
+```
+User123 (2024-11-05): Original question here...
+ExpertUser (2024-11-05): Detailed answer...
+User456 (2024-11-06): Follow-up question...
+```
 
-If this is an ARTICLE or BLOG POST:
-- Extract the main text content
-- Extract publish date if visible
-- Extract author if available
-- Don't include ads, navigation, or related content
+**ARTICLE or BLOG POST:**
+Goal: Extract the complete narrative
+✓ Full article text (introduction → body → conclusion)
+✓ Include subheadings for structure
+✓ Extract inline quotes, statistics, key facts
+✓ Preserve formatting that aids comprehension
+✗ Skip: Ads, "Related Articles", navigation, social share buttons
 
-If this is a PRESS RELEASE:
-- Extract the full press release text
-- Extract publish date and company name
-- Include all key details
+**PRESS RELEASE:**
+Goal: Capture all official information
+✓ Full text including dateline, body, boilerplate
+✓ Company name and location
+✓ Contact information (if present)
+✓ Key facts in bullet format if structured that way
+✓ Exact quotes from executives
 
-If this is a RESEARCH REPORT or WHITEPAPER:
-- Extract the executive summary and key findings
-- Extract publication date and authors
-- Include methodology if present
+**RESEARCH REPORT or WHITEPAPER:**
+Goal: Extract insights and methodology
+✓ Executive summary (complete)
+✓ Key findings (all of them)
+✓ Methodology overview
+✓ Data tables or statistics (summarize if long)
+✓ Conclusions and recommendations
 
-If this is an EVENT PAGE:
-- Extract event details (date, location, description)
-- Extract speaker/participant information
-- Include registration or attendance details if present
+**EVENT PAGE:**
+Goal: Complete event logistics
+✓ Event name and description
+✓ Date, time, timezone
+✓ Location (physical address or virtual link)
+✓ Speakers/participants with bios if available
+✓ Agenda or schedule
+✓ Registration requirements
 
-PAGE CONTENT:
+═══════════════════════════════════════════════════════════════════════════════
+🧠 ADVANCED EXTRACTION TECHNIQUES
+═══════════════════════════════════════════════════════════════════════════════
+
+**Date Intelligence:**
+Look for dates in these locations (priority order):
+1. Meta tags: <meta property="article:published_time">
+2. Structured data: JSON-LD schema
+3. Visible date labels: "Published:", "Posted:", "Date:"
+4. URL patterns: /2024/11/05/ or ?date=2024-11-05
+5. Relative dates: "2 days ago" (calculate actual date if possible)
+
+**Content Quality Signals:**
+High-quality extraction includes:
+- Main narrative/discussion (not noise)
+- Relevant metadata (author, date, source)
+- Structured formatting (paragraphs, lists, quotes)
+- Context that helps understanding
+
+**What to EXCLUDE:**
+✗ Navigation menus
+✗ Advertisements
+✗ "Related Articles" sections
+✗ Cookie banners
+✗ Social sharing buttons
+✗ Footer/copyright text
+✗ Generic website info
+
+═══════════════════════════════════════════════════════════════════════════════
+📄 PAGE CONTENT TO ANALYZE
+═══════════════════════════════════════════════════════════════════════════════
 {cleaned_html}
 
-OUTPUT FORMAT (JSON only, no markdown):
+═══════════════════════════════════════════════════════════════════════════════
+📤 OUTPUT FORMAT
+═══════════════════════════════════════════════════════════════════════════════
+
+Return ONLY valid JSON (no markdown, no extra text):
+
 {{
-  "title": "Content title",
-  "content": "The extracted content in readable format. For forums, include all posts with usernames. For articles, include the full text. For reports, include executive summary and key findings.",
+  "title": "Extracted title (from <title>, <h1>, or article heading)",
+  "content": "Complete extracted content in readable format. For forums: all posts with usernames. For articles: full text with structure. Be comprehensive - this is the PRIMARY VALUE.",
   "publish_date": "YYYY-MM-DD if found, otherwise null",
   "content_type": "article" | "forum_thread" | "discussion" | "blog_post" | "press_release" | "research_report" | "event" | "other",
   "metadata": {{
-    "author": "author name if applicable",
-    "post_count": number_of_posts if forum,
-    "usernames": ["list", "of", "usernames"] if forum,
-    "event_date": "YYYY-MM-DD if event",
-    "company": "company name if press release"
+    "author": "author name (null if not found)",
+    "post_count": number_of_posts_if_forum,
+    "usernames": ["unique", "usernames", "in", "forum"],
+    "event_date": "YYYY-MM-DD if event page",
+    "company": "company name if press release",
+    "word_count": approximate_word_count_of_content,
+    "has_quotes": true/false,
+    "has_statistics": true/false
   }}
-}}"""
+}}
+
+CRITICAL REQUIREMENTS:
+1. Content field must be COMPREHENSIVE (not a summary!)
+2. Preserve structure that aids understanding (paragraphs, lists)
+3. Extract ALL relevant information, don't be selective
+4. For forums: capture EVERY post, not just highlights
+5. Date must be YYYY-MM-DD format (null if not found)
+
+Think like a meticulous researcher. Extract everything that matters."""
     
     try:
         # Use GPT-4o for content extraction (needs understanding)
@@ -365,21 +454,27 @@ async def validate_relevance(
             logger.info(f"❌ Content too old: {content.publish_date.strftime('%Y-%m-%d')}")
             return False
     
-    # LLM relevance check
+    # LLM relevance check (date already validated above if skip_date_check=False)
     prompt = f"""Is this content relevant to the user's request?
 
 USER WANTS: {topic}
-TIME RANGE: Last {time_range_days} days
+TIME RANGE: Last {time_range_days} days (date already validated - focus on topic relevance)
+TODAY'S DATE: {datetime.now().strftime('%Y-%m-%d')} (for reference)
 
 CONTENT:
 - Title: {content.title}
 - Date: {content.publish_date.strftime('%Y-%m-%d') if content.publish_date else 'Unknown'}
 - Preview: {content.content[:500]}
 
+IMPORTANT: 
+- If date validation was already done (skip_date_check=False), focus ONLY on topic/content relevance
+- Don't re-validate the date - assume it's already been checked
+- Only check: Does the content match the user's topic/intent?
+
 Answer with JSON only (no markdown):
 {{
   "is_relevant": true/false,
-  "reason": "Brief explanation (1 sentence)"
+  "reason": "Brief explanation focusing on topic relevance (1 sentence)"
 }}"""
     
     try:

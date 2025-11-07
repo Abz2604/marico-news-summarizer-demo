@@ -153,9 +153,10 @@ Each bullet must capture the CORE insight in one sentence.
 {'Include a 2-3 sentence executive summary at the end.' if self.include_executive_summary else 'No executive summary needed.'}"""
         
         elif self.output_format == OutputFormat.DETAILED:
-            return f"""Create a comprehensive analysis with 5+ key points from EACH article.
-Include detailed context, numbers, quotes, and analysis.
-Organize by category.
+            return f"""Create a comprehensive analysis with 5+ UNIQUE key points from EACH article.
+Include detailed context, numbers, quotes, and analysis specific to each article.
+Format as: ## Article [n]: [Title] with detailed bullets underneath (each with single citation [n]).
+DO NOT group by themes - keep analysis article-specific.
 {'Include a 3-4 sentence executive summary at the end.' if self.include_executive_summary else 'No executive summary needed.'}"""
         
         elif self.output_format == OutputFormat.CONCISE:
@@ -164,8 +165,10 @@ Focus on essential information only.
 {'Include a 2 sentence executive summary at the end.' if self.include_executive_summary else 'No executive summary needed.'}"""
         
         else:  # BULLET_POINTS (default)
-            return f"""Extract {self.bullets_per_article} key points from EACH article (not {self.bullets_per_article} total).
-Organize points by category (Financial Performance, Market Activity, etc.).
+            return f"""Extract {self.bullets_per_article} UNIQUE key points from EACH article (not {self.bullets_per_article} total).
+CRITICAL: Each article must get its own {self.bullets_per_article} distinct bullets describing what's specific to THAT article only.
+Format as: ## Article [n]: [Title] with bullets underneath.
+DO NOT group by themes/categories - keep bullets article-specific with single citations [n].
 {'Include a 2-3 sentence executive summary at the end.' if self.include_executive_summary else 'No executive summary needed.'}"""
     
     def get_focus_area_filter(self) -> Optional[str]:

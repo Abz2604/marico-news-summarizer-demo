@@ -10,7 +10,6 @@ import json
 logger = logging.getLogger(__name__)
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph
 
 from config import get_settings
 from .types import ArticleContent, SeedLink, SummaryResult
@@ -25,6 +24,8 @@ from .date_parser import extract_article_date
 from .content_validator import validate_content
 from .deduplicator import deduplicate_articles
 from .smart_navigator import run_smart_navigation
+from .planner import create_navigation_plan, NavigationPlan
+from .reflector import reflect_on_results, ReflectionResult
 
 
 class AgentState(Dict[str, Any]):
@@ -116,432 +117,49 @@ async def _node_init(state: AgentState) -> AgentState:
     return state
 
 
-async def _node_navigate(state: AgentState) -> AgentState:
+async def _node_plan(state: AgentState) -> AgentState:
     """
-    2-Step Intelligent Navigation Agent:
-    Step 1: Analyze page to understand what it is and if navigation is needed
-    Step 2: Extract relevant article links using AI based on user prompt
-    """
-    _emit(state, {"event": "nav:init"})
-    raw_links = state.get("seed_links", [])
-    links: List[SeedLink] = []
-    for item in raw_links:
-        if isinstance(item, SeedLink):
-            links.append(item)
-        elif isinstance(item, dict) and item.get("url"):
-            links.append(SeedLink(url=str(item.get("url"))))
-        elif isinstance(item, str):
-            links.append(SeedLink(url=item))
-
-    expanded_urls: List[str] = []
-    max_articles: int = state.get("max_articles", 3)
-    prompt = state.get("prompt", "")
+    PLANNING NODE: Create strategic navigation plan before acting.
     
-    logger.info(f"🌐 Navigate node: Processing {len(links)} seed link(s), max_articles={max_articles}")
-
-    for idx, link in enumerate(links, 1):
-        current_url = link.url
-        logger.info(f"🔗 Processing seed link {idx}/{len(links)}: {current_url}")
-        _emit(state, {"event": "nav:fetching_seed", "url": current_url})
-        
-        # 🔍 STEP 0: Extract Context (What are we looking for?)
-        # Use LLM-based universal extraction (works for ANY site)
-        try:
-            context = await extract_context_with_llm(current_url, prompt)
-            logger.info(f"✅ LLM context extraction: {context}")
-        except Exception as e:
-            logger.warning(f"LLM context extraction failed, using fallback: {e}")
-            # Fallback to rule-based extraction
-            context = extract_context_from_url_and_prompt(current_url, prompt)
-        
-        _emit(state, {
-            "event": "nav:context_extracted",
-            "company": context.get("company"),
-            "topic": context.get("topic"),
-            "is_specific": context.get("is_specific"),
-            "source_type": context.get("source_type", "unknown"),
-            "confidence": context.get("confidence", "medium")
-        })
-        
-        # Fetch the seed page
-        html = await fetch_url(current_url, timeout=30)
-        if not html:
-            _emit(state, {"event": "nav:fetch_failed", "url": current_url})
-            # Fallback: add seed URL itself
-            expanded_urls.append(current_url)
-            continue
-        
-        # 🧠 STEP 1: Intelligent Page Analysis (with context!)
-        _emit(state, {"event": "nav:analyzing", "url": current_url})
-        analysis = await analyze_page_for_content(
-            html=html,
-            page_url=current_url,
-            user_prompt=prompt,
-            context=context
-        )
-        
-        _emit(state, {
-            "event": "nav:analysis_complete",
-            "url": current_url,
-            "page_type": analysis.page_type,
-            "needs_navigation": analysis.needs_navigation,
-            "ready_to_extract": analysis.ready_to_extract_links,
-            "summary": analysis.analysis_summary
-        })
-        
-        # 🎯 If page IS an article itself, use it directly (skip link extraction)
-        if analysis.page_type == "article" and not analysis.needs_navigation:
-            _emit(state, {
-                "event": "nav:direct_article",
-                "url": current_url,
-                "reason": "Page is a single article, using directly"
-            })
-            # Use this seed page directly as the article source
-            expanded_urls.append(current_url)
-            logger.info(f"✅ Using seed page as article directly: {current_url}")
-            continue  # Skip link extraction for direct articles
-        
-        # If AI says we need to navigate to a better page, do it (one hop)
-        if analysis.needs_navigation and analysis.navigation_link:
-            _emit(state, {
-                "event": "nav:navigating",
-                "from": current_url,
-                "to": analysis.navigation_link,
-                "reason": analysis.navigation_reason
-            })
-            
-            # Fetch the navigation target
-            nav_html = await fetch_url(analysis.navigation_link, timeout=30)
-            if nav_html:
-                # ✅ VALIDATE: Did we land on the right page?
-                validation = validate_page_relevance(nav_html, analysis.navigation_link, context)
-                _emit(state, {
-                    "event": "nav:validation",
-                    "url": analysis.navigation_link,
-                    "is_relevant": validation["is_relevant"],
-                    "confidence": validation["confidence"],
-                    "reason": validation["reason"]
-                })
-                
-                if validation["is_relevant"]:
-                    # ✅ Good navigation - use this page
-                    current_url = analysis.navigation_link
-                    html = nav_html
-                    _emit(state, {"event": "nav:navigation_success", "url": current_url})
-                else:
-                    # ⚠️ Bad navigation - stay on original page
-                    _emit(state, {
-                        "event": "nav:navigation_rejected",
-                        "url": analysis.navigation_link,
-                        "reason": validation["reason"]
-                    })
-                    # Continue with original page (don't update html/current_url)
-            else:
-                _emit(state, {"event": "nav:navigation_failed", "url": analysis.navigation_link})
-                # Continue with original page
-        
-        # 🔗 STEP 2: AI-Powered Link Extraction (fully prompt-aware)
-        _emit(state, {"event": "nav:extracting_links", "url": current_url})
-        
-        # Get time range from intent for date-aware link filtering
-        intent = state.get("intent")
-        time_range_days = intent.time_range_days if intent else 7
-        
-        article_urls = await extract_article_links_with_ai(
-            html=html,
-            seed_url=current_url,
-            user_prompt=prompt,
-            max_links=max_articles,
-            time_range_days=time_range_days
-        )
-        
-        logger.info(f"🔗 Link extraction found {len(article_urls)} article links (max: {max_articles}, time window: {time_range_days} days)")
-        if len(article_urls) > 0:
-            logger.info(f"   📋 Extracted URLs: {article_urls[:5]}")  # Log first 5 URLs
-        else:
-            logger.error(f"❌ ZERO links extracted from news_listing page! This is wrong.")
-        
-        # 🚀 NEW: Smart JS rendering for lazy-loaded content
-        # If we got very few links AND page has "load more" indicators, retry with JS
-        if len(article_urls) < 5 and _needs_js_rendering(html, current_url):
-            _emit(state, {
-                "event": "nav:js_rendering_needed",
-                "url": current_url,
-                "reason": "Detected lazy-loaded content (Load More button)",
-                "initial_links": len(article_urls)
-            })
-            logger.info(f"🚀 Retrying with JS rendering for lazy-loaded content: {current_url}")
-            
-            # Re-fetch with JS rendering enabled
-            html_js = await fetch_url(current_url, timeout=60, render_js=True)
-            if html_js and len(html_js) > len(html):
-                logger.info(f"✅ JS rendering added {len(html_js) - len(html):,} bytes of content")
-                _emit(state, {
-                    "event": "nav:js_rendering_success",
-                    "url": current_url,
-                    "html_growth": len(html_js) - len(html)
-                })
-                
-                # Re-extract links from JS-rendered HTML
-                article_urls_js = await extract_article_links_with_ai(
-                    html=html_js,
-                    seed_url=current_url,
-                    user_prompt=prompt,
-                    max_links=max_articles,
-                    time_range_days=time_range_days
-                )
-                
-                if len(article_urls_js) > len(article_urls):
-                    logger.info(f"✅ JS rendering found {len(article_urls_js) - len(article_urls)} more links!")
-                    article_urls = article_urls_js
-                    html = html_js  # Use JS-rendered HTML going forward
-                    _emit(state, {
-                        "event": "nav:js_rendering_improved",
-                        "url": current_url,
-                        "new_links": len(article_urls_js),
-                        "improvement": len(article_urls_js) - len(article_urls)
-                    })
-        
-        if article_urls:
-            _emit(state, {"event": "nav:extraction_success", "url": current_url, "found": len(article_urls)})
-            before_count = len(expanded_urls)
-            for art_url in article_urls:
-                if art_url not in expanded_urls:
-                    expanded_urls.append(art_url)
-                    _emit(state, {"event": "nav:article_link", "url": art_url})
-            added_count = len(expanded_urls) - before_count
-            logger.info(f"   ➕ Added {added_count} new URLs to expanded_urls (total now: {len(expanded_urls)}, {len(article_urls) - added_count} were duplicates)")
-        else:
-            _emit(state, {"event": "nav:no_links_found", "url": current_url})
-            # Fallback: add current URL itself if AI found nothing
-            if current_url not in expanded_urls:
-                expanded_urls.append(current_url)
-                logger.warning(f"   ⚠️ No article links found, using seed URL itself as fallback")
-
-    logger.info(f"🏁 Navigate complete: {len(expanded_urls)} total URLs collected for fetching")
-    state["expanded_urls"] = expanded_urls
-    return state
-
-async def _node_fetch(state: AgentState) -> AgentState:
+    This is where the agent THINKS before it ACTS.
+    """
+    if state.get("error"):
+        return state
+    
+    _emit(state, {"event": "plan:init"})
+    
     raw_links = state.get("seed_links", [])
-    links: List[SeedLink] = []
-    for item in raw_links:
-        try:
-            if isinstance(item, SeedLink):
-                links.append(item)
-            elif isinstance(item, dict) and item.get("url"):
-                links.append(SeedLink(url=str(item.get("url")), depth_limit=int(item.get("depth_limit", 0) or 0)))
-            elif isinstance(item, str):
-                links.append(SeedLink(url=item))
-        except Exception:  # noqa: BLE001
-            continue
+    seed_url = raw_links[0].url if raw_links and len(raw_links) > 0 else None
+    
+    if not seed_url:
+        logger.warning("⚠️ No seed URL for planning, skipping plan phase")
+        return state
+    
+    intent = state.get("intent")
+    max_articles = state.get("max_articles", 10)
+    
     try:
-        logging.info("agent: %s", json.dumps({"event": "fetch:init", "seed_link_count": len(links)}))
-    except Exception:
-        logging.info("agent: fetch:init seed_link_count=%s", len(links))
-    max_articles: int = state.get("max_articles", 3)
-    time_cutoff = state.get("time_cutoff")
-    collected: List[ArticleContent] = []
-    skipped_by_date = 0
-    skipped_by_quality = 0
-    
-    if time_cutoff:
-        logger.info(f"⏰ Time filtering enabled: articles must be after {time_cutoff.strftime('%Y-%m-%d')}")
-
-    expanded_urls: List[str] = state.get("expanded_urls") or []
-    if not expanded_urls:
-        # fallback to raw links
-        for link in links:
-            expanded_urls.append(link.url)
-    
-    # 🎯 SMART WORK: Don't try to fetch more URLs than we need
-    # Limit to a reasonable buffer above max_articles
-    # For time-focused queries, max_articles might be 20, but we still want to limit fetches
-    # Use a smaller multiplier to avoid fetching too many
-    buffer_size = min(5, max(3, max_articles // 4))  # Buffer: 25% of max_articles, min 3, max 5
-    fetch_limit = min(len(expanded_urls), max_articles + buffer_size)
-    
-    if len(expanded_urls) > fetch_limit:
-        logger.info(f"💡 Smart limiting: Will fetch {fetch_limit} of {len(expanded_urls)} extracted articles (max_articles={max_articles}, buffer={buffer_size})")
-        expanded_urls = expanded_urls[:fetch_limit]
-    else:
-        logger.info(f"📊 Fetch plan: {len(expanded_urls)} articles to fetch (max_articles={max_articles}, all URLs within limit)")
-    
-    # Emit event at START of fetch phase so UI doesn't look stuck
-    if expanded_urls:
-        _emit(state, {"event": "fetch:phase_start", "total_urls": len(expanded_urls), "max_articles": max_articles})
-        logger.info(f"📥 Starting fetch phase: {len(expanded_urls)} articles to fetch (need {max_articles}, will stop early if enough collected)")
-
-    for idx, url in enumerate(expanded_urls):
-        # 🎯 EARLY EXIT: Stop if we have enough articles
-        if len(collected) >= max_articles:
-            remaining = len(expanded_urls) - idx
-            logger.info(f"✅ Collected enough articles ({len(collected)}/{max_articles}), stopping fetch early (skipped {remaining} URLs)")
-            _emit(state, {"event": "fetch:early_exit", "collected": len(collected), "max": max_articles, "remaining": remaining})
-            break
-        
-        # Skip obvious listing pages (generic check based on URL patterns)
-        try:
-            # Skip if URL looks like a listing/category page
-            if any(pattern in url.lower() for pattern in ["/category/", "/categories/", "/tags/", "/tag/"]):
-                if url.endswith("/") or url.endswith(".html"):
-                    _emit(state, {"event": "fetch:skip", "url": url, "reason": "listing_page"})
-                    continue
-        except Exception:
-            pass
-        _emit(state, {"event": "fetch:start", "url": url})
-        # Fetch using Bright Data Web Unlocker
-        _emit(state, {"event": "fetch:brightdata_start", "url": url})
-        html = await fetch_url(url, timeout=30)
-        if not html:
-            _emit(state, {"event": "fetch:error", "url": url, "reason": "fetch_failed"})
-            continue
-        text = extract_main_text(html)
-        title = extract_title(html)
-        _emit(state, {"event": "extract:length", "url": url, "length": len(text or "")})
-        
-        # Validate content quality (Phase 2: Content Quality)
-        quality = await validate_content(text, url)
-        
-        if not quality.is_valid:
-            skipped_by_quality += 1
-            _emit(state, {
-                "event": "fetch:skip",
-                "url": url,
-                "reason": "quality_issues",
-                "issues": quality.issues,
-                "is_paywall": quality.is_paywall
-            })
-            continue
-        
-        # Extract publish date (Phase 1: Date Intelligence)
-        published_date, date_confidence, date_method = await extract_article_date(html, url)
-        
-        if published_date:
-            _emit(state, {
-                "event": "date:extracted",
-                "url": url,
-                "date": published_date.strftime("%Y-%m-%d"),
-                "confidence": date_confidence,
-                "method": date_method
-            })
-            
-            # Validate against time cutoff (if present)
-            time_cutoff = state.get("time_cutoff")
-            if time_cutoff and published_date < time_cutoff:
-                age_days = (datetime.now() - published_date).days
-                skipped_by_date += 1
-                logger.info(f"⏰ Article too old: {url[:60]}... ({age_days} days old, cutoff: {time_cutoff.strftime('%Y-%m-%d')})")
-                _emit(state, {
-                    "event": "fetch:skip",
-                    "url": url,
-                    "reason": "too_old",
-                    "age_days": age_days,
-                    "cutoff_date": time_cutoff.strftime("%Y-%m-%d")
-                })
-                continue
-        else:
-            logger.info(f"📅 No date found for {url[:60]}... - including anyway (will sort by fetch time)")
-            _emit(state, {"event": "date:not_found", "url": url})
-        
-        collected.append(
-            ArticleContent(
-                url=url,
-                resolved_url=url,
-                title=title,
-                text=text,
-                fetched_at=datetime.utcnow(),
-                published_date=published_date,
-                date_confidence=date_confidence,
-                date_extraction_method=date_method,
-            )
+        logger.info("📋 Creating strategic navigation plan...")
+        plan = await create_navigation_plan(
+            seed_url=seed_url,
+            user_intent=intent.to_dict() if hasattr(intent, 'to_dict') else intent,
+            max_articles=max_articles
         )
-        _emit(state, {"event": "fetch:success", "url": url})
-        if len(collected) >= max_articles:
-            break
-
-    # Deduplicate articles (Phase 2: Content Quality)
-    before_dedup = len(collected)
-    if len(collected) > 1:
-        _emit(state, {"event": "dedup:start", "count": len(collected)})
-        collected = await deduplicate_articles(collected)
-        _emit(state, {"event": "dedup:complete", "unique_count": len(collected)})
-    
-    # Log filtering summary
-    logger.info(f"📊 Fetch summary: {len(collected)} articles collected, {skipped_by_date} skipped (too old), {skipped_by_quality} skipped (quality), {before_dedup - len(collected)} duplicates removed")
-    
-    # Final check: if nothing collected, try seed page as fallback
-    if not collected:
-        _emit(state, {"event": "fetch:fallback_to_seed", "reason": "No articles found via navigation"})
-        logger.warning("⚠️ No articles collected, attempting seed page fallback")
         
-        # Try using original seed links as articles
-        for seed_link in links:
-            if len(collected) >= max_articles:
-                break
-            
-            try:
-                _emit(state, {"event": "fetch:fallback_attempt", "url": seed_link.url})
-                html = await fetch_url(seed_link.url, timeout=30)
-                if not html:
-                    continue
-                
-                text = extract_main_text(html)
-                title = extract_title(html)
-                
-                # Basic validation
-                if len(text or "") < 300:
-                    logger.info(f"Seed page too short: {seed_link.url}")
-                    continue
-                
-                # Validate content quality
-                quality = await validate_content(text, seed_link.url)
-                if not quality.is_valid:
-                    logger.info(f"Seed page failed quality check: {seed_link.url}")
-                    continue
-                
-                # Extract date
-                published_date, date_confidence, date_method = await extract_article_date(html, seed_link.url)
-                
-                # Check time cutoff if present
-                time_cutoff = state.get("time_cutoff")
-                if time_cutoff and published_date and published_date < time_cutoff:
-                    logger.info(f"Seed page outside time window: {seed_link.url}")
-                    continue
-                
-                # Use seed page as article
-                collected.append(
-                    ArticleContent(
-                        url=seed_link.url,
-                        resolved_url=seed_link.url,
-                        title=title,
-                        text=text,
-                        fetched_at=datetime.utcnow(),
-                        published_date=published_date,
-                        date_confidence=date_confidence,
-                        date_extraction_method=date_method,
-                    )
-                )
-                _emit(state, {"event": "fetch:fallback_success", "url": seed_link.url})
-                logger.info(f"✅ Successfully used seed page as fallback: {seed_link.url}")
-                
-            except Exception as e:
-                logger.error(f"Seed page fallback failed for {seed_link.url}: {e}")
-                continue
+        state["plan"] = plan
+        _emit(state, {
+            "event": "plan:complete",
+            "strategy": plan.strategy,
+            "expected_type": plan.expected_page_type,
+            "confidence": plan.confidence,
+            "estimated_depth": plan.estimated_depth
+        })
         
-        # If still nothing, return error
-        if not collected:
-            state["error"] = {
-                "code": "no_articles",
-                "message": "Could not extract usable content from the provided URL. The page may not contain articles or may be behind a paywall."
-            }
-            _emit(state, {"event": "fetch:no_articles"})
-            return state
-        else:
-            logger.info(f"✅ Seed page fallback succeeded: {len(collected)} articles")
-            _emit(state, {"event": "fetch:fallback_complete", "count": len(collected)})
+    except Exception as e:
+        logger.error(f"Planning failed: {e}")
+        _emit(state, {"event": "plan:error", "message": str(e)})
+        # Continue without plan (graceful degradation)
     
-    state["articles"] = collected
     return state
 
 
@@ -630,6 +248,71 @@ async def _node_smart_navigate_and_fetch(state: AgentState) -> AgentState:
     return state
 
 
+async def _node_reflect(state: AgentState) -> AgentState:
+    """
+    REFLECTION NODE: Agent evaluates its own results.
+    
+    This is METACOGNITION - thinking about thinking.
+    Did we accomplish what user wanted?
+    """
+    if state.get("error"):
+        return state
+    
+    articles = state.get("articles", [])
+    if not articles:
+        # Skip reflection if no articles (will be handled by summarize node)
+        return state
+    
+    _emit(state, {"event": "reflect:init"})
+    
+    intent = state.get("intent")
+    plan = state.get("plan")
+    max_articles = state.get("max_articles", 10)
+    
+    try:
+        logger.info("🤔 Reflecting on collected results...")
+        
+        # Convert plan to dict if it's an object
+        plan_dict = None
+        if plan:
+            if hasattr(plan, '__dict__'):
+                plan_dict = {
+                    'strategy': getattr(plan, 'strategy', None),
+                    'success_criteria': getattr(plan, 'success_criteria', {}),
+                    'estimated_depth': getattr(plan, 'estimated_depth', None)
+                }
+            elif isinstance(plan, dict):
+                plan_dict = plan
+        
+        reflection = await reflect_on_results(
+            articles=articles,
+            intent=intent.to_dict() if hasattr(intent, 'to_dict') else intent,
+            plan=plan_dict,
+            max_articles=max_articles
+        )
+        
+        state["reflection"] = reflection
+        _emit(state, {
+            "event": "reflect:complete",
+            "success": reflection.success,
+            "quality_score": reflection.quality_score,
+            "should_continue": reflection.should_continue,
+            "gaps": len(reflection.gaps),
+            "reasoning": reflection.reasoning
+        })
+        
+        # Note: We don't auto-continue even if should_continue=true
+        # That would require recursive navigation, which we skip for now
+        # But the reflection is still valuable for debugging and future improvements
+        
+    except Exception as e:
+        logger.error(f"Reflection failed: {e}")
+        _emit(state, {"event": "reflect:error", "message": str(e)})
+        # Continue without reflection (graceful degradation)
+    
+    return state
+
+
 async def _node_summarize(state: AgentState) -> AgentState:
     if state.get("error"):
         return state
@@ -675,31 +358,48 @@ FORMATTING RULES:
 IMPORTANT: Follow the user’s output preference exactly and align to the subject (company OR industry/theme)."""
     else:
         # Fallback to default (backward compatibility)
-        system_prompt = """You are an intelligent insights analyst creating structured, categorized summaries.
+        system_prompt = """You are an intelligent insights analyst creating article-specific summaries.
 
-TASK: Create a comprehensive summary with these requirements:
-1. Extract 3 KEY POINTS from EACH article (not 3 total - 3 per article!)
-2. Organize points by CATEGORY such as Market Trends, Industry Dynamics, Financial Performance, Market Activity, Corporate Actions, Products/Innovation, Leadership Changes, Regulatory/Legal
-3. Each point must include citation [n] where n is the article index
-4. End with a 2-3 sentence executive summary
+TASK: Create a summary with UNIQUE points for EACH article:
+1. For each article, extract 3 KEY POINTS that are SPECIFIC to that article only
+2. Each bullet must describe what's UNIQUE in that specific article (not shared themes)
+3. Every point must include ONLY its own citation [n] (e.g., [1], not [1][3][5])
+4. End with a 2-3 sentence executive summary synthesizing across all articles
+
+CRITICAL RULES:
+❌ FORBIDDEN: Shared bullets across multiple articles (e.g., "Trend X is popular [1][3][5]")
+✅ REQUIRED: Each article gets its OWN unique bullets describing its specific content
+✅ Each bullet should have ONLY ONE citation number (the article it came from)
+✅ Focus on what makes each article DIFFERENT, not what they have in common
 
 FORMAT:
-## [Category Name]
-- Point from article [1]
-- Point from article [2]
+## Article [1]: [Article Title]
+- Unique point 1 from article [1]
+- Unique point 2 from article [1]
+- Unique point 3 from article [1]
 
-## [Another Category]
-- Point from article [1]
-- Point from article [3]
+## Article [2]: [Article Title]
+- Unique point 1 from article [2]
+- Unique point 2 from article [2]
+- Unique point 3 from article [2]
 
-**Executive Summary:** [2-3 sentences synthesizing key themes]
+**Executive Summary:** [2-3 sentences synthesizing key themes across ALL articles]
 
-RULES:
-✅ 3 points per article minimum
-✅ Factual, no speculation
-✅ Clear categories
-✅ Every point cited
-✅ Align categories to the subject (company OR industry/theme)"""
+EXAMPLE (CORRECT):
+## Article [1]: 32 Gel Manicure Ideas
+- Features gothic window designs with burgundy and black color schemes [1]
+- Includes celestial cat eye effects using magnetic gel polish [1]
+- Showcases 3D embellishments with chrome accents [1]
+
+## Article [2]: Almond Nail Ideas  
+- Highlights mismatched dot patterns on almond-shaped nails [2]
+- Features chocolate shimmer finishes for fall season [2]
+- Demonstrates French tip variations with edgy twists [2]
+
+EXAMPLE (WRONG - DO NOT DO THIS):
+## Seasonal Trends
+- November embraces autumnal colors like chocolate and plum [1][3][5] ❌ WRONG!
+- Almond shapes are popular this month [2][4] ❌ WRONG!"""
 
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -784,29 +484,13 @@ async def _node_finalize(state: AgentState) -> AgentState:
     return state
 
 
-def build_agent_graph():
-    # Retained for future use; not used in Phase 0 orchestration
-    graph = StateGraph(AgentState)
-    graph.add_node("init", _node_init)
-    graph.add_node("fetch", _node_fetch)
-    graph.add_node("summarize", _node_summarize)
-    graph.add_node("finalize", _node_finalize)
-
-    graph.set_entry_point("init")
-    graph.add_edge("init", "fetch")
-    graph.add_edge("fetch", "summarize")
-    graph.add_edge("summarize", "finalize")
-
-    return graph.compile()
-
 
 async def run_agent(
     prompt: str, 
     seed_links: List[str], 
-    max_articles: int = 10,  # Increased from 3 to allow more articles within time window
+    max_articles: int = 10,
     event_callback: Optional[callable] = None,
-    use_smart_navigation: bool = True,  # NEW: Enable smart LLM-based navigation
-    target_section: str = ""  # NEW: Explicit section override (forum, news, etc.)
+    target_section: str = ""  # Explicit section override (forum, news, etc.)
 ) -> Optional[SummaryResult]:
     # 🎯 STEP 0: Extract User Intent (NEW in Phase 0)
     # Understand what the user wants: format, timeframe, focus areas
@@ -835,19 +519,35 @@ async def run_agent(
         "_event_callback": event_callback,  # For SSE streaming
     }
 
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # PHASE 2: ADVANCED AGENTIC WORKFLOW
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # 1. INIT: Initialize state
+    # 2. PLAN: Strategic thinking before acting  
+    # 3. NAVIGATE: Execute navigation strategy
+    # 4. REFLECT: Evaluate results (metacognition)
+    # 5. SUMMARIZE: Create final output
+    # 6. FINALIZE: Cleanup and logging
+    # ═══════════════════════════════════════════════════════════════════════════════
+    
     state = await _node_init(state)
     
-    # Choose navigation strategy
-    if use_smart_navigation:
-        logger.info("🧠 Using SMART NAVIGATION (LLM-driven)")
-        # Smart navigation replaces both navigate and fetch nodes
-        state = await _node_smart_navigate_and_fetch(state)
-    else:
-        logger.info("📜 Using LEGACY NAVIGATION (rule-based)")
-        state = await _node_navigate(state)
-        state = await _node_fetch(state)
+    # PLANNING PHASE: Think strategically before acting
+    logger.info("📋 PHASE 2 AGENT: Planning → Navigate → Reflect → Summarize")
+    state = await _node_plan(state)
     
+    # NAVIGATION PHASE: Execute smart navigation strategy
+    logger.info("🧠 Executing smart navigation (LLM-driven)")
+    state = await _node_smart_navigate_and_fetch(state)
+    
+    # REFLECTION PHASE: Evaluate our own results (metacognition)
+    logger.info("🤔 Reflecting on collected results...")
+    state = await _node_reflect(state)
+    
+    # SUMMARIZATION PHASE: Create final summary
     state = await _node_summarize(state)
+    
+    # FINALIZATION PHASE: Cleanup
     state = await _node_finalize(state)
 
     if state.get("error"):
