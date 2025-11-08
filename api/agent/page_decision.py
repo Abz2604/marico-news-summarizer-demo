@@ -233,7 +233,7 @@ ACTION OPTIONS:
    ✓ Search results page
    ✗ NOT for: Individual content pages (those should be EXTRACT_CONTENT)
    ⚠️  CRITICAL: A "list of threads" needs deeper navigation - go INTO the threads
-
+   
 3. **NAVIGATE_TO** ← Use when you need to reach a better section FIRST
    ✓ Homepage → "News Section" link
    ✓ Company profile → "Press Releases" link

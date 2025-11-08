@@ -216,7 +216,7 @@ async def extract_content_with_llm(
     except Exception as e:
         logger.warning(f"FocusAgent failed, using standard cleaning: {e}")
         # Fallback to standard cleaning
-        cleaned_html = clean_html_for_extraction(html, max_chars=15000)
+    cleaned_html = clean_html_for_extraction(html, max_chars=15000)
     
     # Get page title from HTML
     soup = BeautifulSoup(html, 'html.parser')
