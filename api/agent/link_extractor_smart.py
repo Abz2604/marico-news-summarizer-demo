@@ -154,24 +154,54 @@ async def extract_relevant_links_with_llm(
     
     logger.info(f"📊 Pre-filtering: {len(all_links)} total → {len(filtered_links)} likely articles (order preserved)")
     
-    # Take top candidates for LLM analysis (maintaining page order)
-    links_to_analyze = filtered_links[:100]
+    # Extract intent parameters
+    topic = intent.get('topic', '')
+    target_section = intent.get('target_section', '')
+    time_range_days = intent.get('time_range_days', 7)
     
-    if len(links_to_analyze) == 0:
+    # Try batches of 100 links until we find articles (different sites have different structures)
+    batch_size = 100
+    max_batches = 3  # Try up to 3 batches (positions 0-100, 100-200, 200-300)
+    
+    if len(filtered_links) == 0:
         logger.warning("⚠️ No article-like links found after filtering!")
         return []
     
-    if len(filtered_links) > 100:
-        logger.info(f"✂️ Sending top 100 article candidates (out of {len(filtered_links)} filtered, order preserved)")
+    for batch_num in range(max_batches):
+        start_idx = batch_num * batch_size
+        end_idx = start_idx + batch_size
+        
+        if start_idx >= len(filtered_links):
+            break  # No more links to try
+        
+        links_to_analyze = filtered_links[start_idx:end_idx]
+        
+        if len(links_to_analyze) == 0:
+            break
+        
+        batch_info = f"batch {batch_num + 1} (links {start_idx}-{end_idx})" if batch_num > 0 else "first 100"
+        logger.info(f"📊 Analyzing {batch_info}: {len(links_to_analyze)} links (out of {len(filtered_links)} total)")
+        
+        # Try this batch with LLM
+        extracted_links = await _analyze_links_with_llm(links_to_analyze, topic, target_section, time_range_days, max_links)
+        
+        if len(extracted_links) > 0:
+            logger.info(f"✅ Found {len(extracted_links)} links in {batch_info}")
+            return extracted_links
+        else:
+            logger.warning(f"⚠️ No relevant links found in {batch_info}, trying next batch...")
+    
+    logger.warning(f"❌ No relevant links found after trying {max_batches} batches")
+    return []
+
+
+async def _analyze_links_with_llm(links_to_analyze, topic, target_section, time_range_days, max_links):
+    """Helper to analyze a batch of links with LLM"""
     
     link_list = "\n".join([
         f"  {i+1}. [{link['text'][:80] or 'No text'}] → {link['url']}\n     Context: {link['context'][:100] if link['context'] else 'N/A'}"
         for i, link in enumerate(links_to_analyze)
     ])
-    
-    topic = intent.get('topic', '')
-    target_section = intent.get('target_section', '')
-    time_range_days = intent.get('time_range_days', 7)
     
     prompt = f"""Extract and rank links relevant to user intent.
 
