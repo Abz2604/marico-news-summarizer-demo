@@ -200,19 +200,69 @@ async def extract_content_with_llm(
     # Stage 2: GPT-4o processes focused content (EXPENSIVE but on less data)
     # ═════════════════════════════════════════════════════════════════════════
     
-    try:
-        focused_content, original_size = await extract_focused_content(
-            html=html,
-            url=url,
-            intent=intent,
-            max_chunks=10
-        )
-        cleaned_html = focused_content
-        logger.info(f"✨ FocusAgent: Using focused content ({len(focused_content)} chars from {original_size} bytes)")
-    except Exception as e:
-        logger.warning(f"FocusAgent failed, using standard cleaning: {e}")
-        # Fallback to standard cleaning
-    cleaned_html = clean_html_for_extraction(html, max_chars=15000)
+    # 🔧 SURGICAL FIX: Skip FocusAgent for forum/discussion pages
+    # Forums have multiple small content blocks (comments/posts) that FocusAgent 
+    # might mistakenly discard as "noise". For these pages, preserve HTML structure.
+    is_forum_page = any(keyword in page_type.lower() for keyword in ['forum', 'discussion', 'thread', 'comment', 'review'])
+    
+    if is_forum_page:
+        logger.info(f"🗨️  Forum/discussion page detected (type: {page_type}), extracting forum posts")
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # Strategy: Find all post/comment containers and extract only those
+        # Common patterns: postItem, post-item, comment, message-content, etc.
+        post_containers = []
+        
+        # Try multiple patterns to find post containers
+        for pattern in ['postitem', 'post-item', 'comment', 'message', 'forum-post', 'topic-post']:
+            posts = soup.find_all(class_=lambda x: x and pattern in str(x).lower())
+            if posts:
+                post_containers.extend(posts)
+                logger.info(f"   Found {len(posts)} elements matching pattern '{pattern}'")
+        
+        if post_containers:
+            # Extract text from each post container
+            extracted_posts = []
+            for post in post_containers[:50]:  # Limit to first 50 posts
+                # Remove buttons and images from this post
+                for tag in post.find_all(['button', 'img']):
+                    tag.decompose()
+                
+                # Get text from this post
+                post_text = post.get_text(separator='\n', strip=True)
+                if len(post_text) > 20:  # Skip empty/tiny posts
+                    extracted_posts.append(post_text)
+            
+            cleaned_html = '\n\n---\n\n'.join(extracted_posts)[:50000]
+            logger.info(f"   Extracted {len(extracted_posts)} posts, total: {len(cleaned_html)} chars")
+            logger.info(f"   Preview: {cleaned_html[:300]}...")
+        else:
+            # Fallback: use body with aggressive cleaning
+            logger.info(f"   No post containers found, falling back to full body extraction")
+            body = soup.find('body')
+            if body:
+                soup = body
+            
+            # Remove noise
+            for tag in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'button', 'img']):
+                tag.decompose()
+            
+            cleaned_html = soup.get_text(separator='\n', strip=True)[:50000]
+            logger.info(f"   Fallback extraction: {len(cleaned_html)} chars")
+    else:
+        try:
+            focused_content, original_size = await extract_focused_content(
+                html=html,
+                url=url,
+                intent=intent,
+                max_chunks=10
+            )
+            cleaned_html = focused_content
+            logger.info(f"✨ FocusAgent: Using focused content ({len(focused_content)} chars from {original_size} bytes)")
+        except Exception as e:
+            logger.warning(f"FocusAgent failed, using standard cleaning: {e}")
+            # Fallback to standard cleaning
+            cleaned_html = clean_html_for_extraction(html, max_chars=15000)
     
     # Get page title from HTML
     soup = BeautifulSoup(html, 'html.parser')
@@ -385,6 +435,7 @@ Think like a meticulous researcher. Extract everything that matters."""
         content = result.get('content', '').strip()
         if not content or len(content) < 50:
             logger.warning(f"Extracted content too short ({len(content)} chars)")
+            logger.warning(f"   LLM response preview: {response_text[:500]}")
             return None
         
         # Use HTML title as fallback

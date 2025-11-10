@@ -111,3 +111,18 @@ def update_briefing_last_run(briefing_id: str) -> None:
         WHERE id = %(briefing_id)s;
     """
     execute(query, {"briefing_id": briefing_id})
+
+
+def delete_briefing(briefing_id: str) -> bool:
+    """Deletes a briefing by ID. Returns True if deleted, False if not found."""
+    # First check if briefing exists
+    briefing = get_briefing_by_id(briefing_id)
+    if not briefing:
+        return False
+    
+    query = """
+        DELETE FROM AI_NW_SUMM_BRIEFINGS
+        WHERE id = %(briefing_id)s;
+    """
+    execute(query, {"briefing_id": briefing_id})
+    return True

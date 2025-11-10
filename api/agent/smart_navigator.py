@@ -199,6 +199,55 @@ async def smart_navigate(
             logger.info(f"   Found {len(links)} relevant links")
             emit({"event": "nav:links_found", "url": url, "count": len(links)})
             
+            # 🔄 FALLBACK: If no links found at depth 0, try extracting content directly
+            # This handles cases like forum threads or review pages where all content is visible
+            if len(links) == 0 and depth == 0:
+                logger.info(f"🔄 Fallback: No links found at depth 0, attempting direct content extraction...")
+                emit({"event": "nav:fallback_content_extraction", "url": url, "reason": "no_links_at_depth_0"})
+                
+                try:
+                    content = await extract_content_with_llm(
+                        html=html,
+                        url=url,
+                        page_type=decision.page_type,
+                        intent=intent
+                    )
+                    
+                    if content:
+                        # Validate relevance
+                        is_relevant = await validate_relevance(content, intent, skip_date_check=False)
+                        
+                        if is_relevant:
+                            article = ArticleContent(
+                                url=url,
+                                resolved_url=url,
+                                title=content.title,
+                                text=content.content,
+                                fetched_at=datetime.utcnow(),
+                                published_date=content.publish_date,
+                                date_confidence=0.8 if content.publish_date else 0.0,
+                                date_extraction_method="llm",
+                                metadata=content.metadata
+                            )
+                            collected.append(article)
+                            logger.info(f"✅ Fallback successful! Content extracted from listing page itself")
+                            emit({
+                                "event": "nav:fallback_success",
+                                "url": url,
+                                "title": content.title,
+                                "collected_count": len(collected)
+                            })
+                        else:
+                            logger.info(f"❌ Fallback: Content not relevant")
+                            emit({"event": "nav:fallback_not_relevant", "url": url})
+                    else:
+                        logger.info(f"❌ Fallback: No content extracted")
+                        emit({"event": "nav:fallback_no_content", "url": url})
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ Fallback content extraction failed: {e}")
+                    emit({"event": "nav:fallback_error", "url": url, "error": str(e)})
+            
             # Track consecutive date filter failures for early stopping
             consecutive_date_failures = 0
             MAX_CONSECUTIVE_FAILURES = 3  # Stop if 3 articles in a row fail date filter

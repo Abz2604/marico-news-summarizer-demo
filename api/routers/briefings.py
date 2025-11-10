@@ -152,6 +152,15 @@ async def update_briefing(briefing_id: str, payload: BriefingUpdate) -> Briefing
     )
 
 
+@router.delete("/{briefing_id}", status_code=204)
+async def delete_briefing(briefing_id: str):
+    """Deletes a briefing by ID."""
+    deleted = briefings_service.delete_briefing(briefing_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Briefing not found")
+    return None  # 204 No Content
+
+
 @router.get("/{briefing_id}/runs")
 async def list_runs(briefing_id: str) -> dict:
     briefing = briefings_service.get_briefing_by_id(briefing_id)

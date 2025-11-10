@@ -36,6 +36,11 @@ async function fetchAPI<T>(endpoint: string, options: RequestInit = {}): Promise
     )
   }
 
+  // Handle 204 No Content (e.g., DELETE responses)
+  if (response.status === 204) {
+    return undefined as T
+  }
+
   return response.json()
 }
 
@@ -131,6 +136,12 @@ export const apiClient = {
       return fetchAPI<Briefing>("/briefings", {
         method: "POST",
         body: JSON.stringify(data),
+      })
+    },
+
+    delete: async (id: string): Promise<void> => {
+      return fetchAPI(`/briefings/${id}`, {
+        method: "DELETE",
       })
     },
 

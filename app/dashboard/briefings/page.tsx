@@ -109,17 +109,31 @@ export default function MyBriefingsPage() {
     }
   }
 
-  const deleteBriefing = (id: string) => {
-    // TODO: Implement actual delete API call
-    setDeletingId(id)
-    setTimeout(() => {
-      setBriefings(briefings.filter((b) => b.id !== id))
-      setDeletingId(null)
+  const deleteBriefing = async (id: string, name: string) => {
+    try {
+      setDeletingId(id)
+      await apiClient.briefings.delete(id)
+      
+      // Show success toast
       toast({
         title: "Briefing deleted",
-        description: "The briefing has been removed",
+        description: `"${name}" has been permanently removed`,
       })
-    }, 300)
+      
+      // Small delay before removing from UI for smooth transition
+      setTimeout(() => {
+        setBriefings(briefings.filter((b) => b.id !== id))
+        setDeletingId(null)
+      }, 500)
+    } catch (error) {
+      console.error("Failed to delete briefing:", error)
+      setDeletingId(null)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to delete briefing",
+        variant: "destructive",
+      })
+    }
   }
 
   const viewBriefingSummary = async (briefing: Briefing) => {
@@ -225,11 +239,18 @@ export default function MyBriefingsPage() {
             {briefings.map((briefing, index) => (
               <Card
                 key={briefing.id}
-                className={`hover:shadow-md transition-all duration-300 animate-in fade-in slide-in-from-top ${
-                  deletingId === briefing.id ? "opacity-0 scale-95" : ""
-                }`}
+                className="hover:shadow-md transition-all duration-300 animate-in fade-in slide-in-from-top relative"
                 style={{ animationDelay: `${index * 50}ms` }}
               >
+                {/* Deleting overlay */}
+                {deletingId === briefing.id && (
+                  <div className="absolute inset-0 bg-background/80 backdrop-blur-sm z-10 flex items-center justify-center rounded-lg">
+                    <div className="flex flex-col items-center gap-2">
+                      <Loader2 className="w-8 h-8 animate-spin text-destructive" />
+                      <p className="text-sm text-muted-foreground">Deleting...</p>
+                    </div>
+                  </div>
+                )}
                 <CardContent className="p-6">
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1">
@@ -304,7 +325,8 @@ export default function MyBriefingsPage() {
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => deleteBriefing(briefing.id)}
+                        onClick={() => deleteBriefing(briefing.id, briefing.name)}
+                        disabled={deletingId === briefing.id}
                         title="Delete"
                         className="text-destructive hover:text-destructive transition-all duration-200 hover:bg-destructive/10"
                       >
