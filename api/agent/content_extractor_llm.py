@@ -17,8 +17,8 @@ from datetime import datetime
 import re
 
 from bs4 import BeautifulSoup
-from langchain_openai import ChatOpenAI
 from config import get_settings
+from .llm_factory import get_smart_llm, get_fast_llm
 from .focus_agent import extract_focused_content
 
 logger = logging.getLogger(__name__)
@@ -128,11 +128,7 @@ Return ONLY JSON (no markdown):
 If no clear publication date found, return {{"found": false, "date": null, "confidence": 0.0}}"""
         
         try:
-            llm = ChatOpenAI(
-                model="gpt-4o-mini",  # Fast and cheap for simple extraction
-                api_key=settings.openai_api_key,
-                temperature=0
-            )
+            llm = get_fast_llm(temperature=0)  # Fast model for simple extraction
             
             response = await llm.ainvoke(prompt)
             response_text = response.content.strip()
@@ -353,11 +349,7 @@ Think like a meticulous researcher. Extract everything that matters."""
     
     try:
         # Use GPT-4o for content extraction (needs understanding)
-        llm = ChatOpenAI(
-            model="gpt-4o",
-            api_key=settings.openai_api_key,
-            temperature=0
-        )
+        llm = get_smart_llm(temperature=0)  # Smart model for content extraction
         
         response = await llm.ainvoke(prompt)
         response_text = response.content.strip()
@@ -479,11 +471,7 @@ Answer with JSON only (no markdown):
     
     try:
         # Use GPT-4o-mini for simple yes/no
-        llm = ChatOpenAI(
-            model="gpt-4o-mini",
-            api_key=settings.openai_api_key,
-            temperature=0
-        )
+        llm = get_fast_llm(temperature=0)  # Fast model for relevance check
         
         response = await llm.ainvoke(prompt)
         response_text = response.content.strip()

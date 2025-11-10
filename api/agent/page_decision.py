@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 from bs4 import BeautifulSoup
-from langchain_openai import ChatOpenAI
 from config import get_settings
+from .llm_factory import get_smart_llm
 
 logger = logging.getLogger(__name__)
 
@@ -429,6 +429,11 @@ Navigation depth: {depth}/{max_depth} (deeper = more focused)
 🎯 YOUR TASK: STRATEGIC DECISION-MAKING
 ═══════════════════════════════════════════════════════════════════════════════
 
+🚀 **OPTIMIZATION: LISTING PAGE PRIORITY AT DEPTH 0**
+If depth = 0 (seed URL) and page shows MULTIPLE article links/items:
+→ **STRONGLY PREFER EXTRACT_LINKS** - This is the most efficient path!
+→ NAVIGATE_TO should only be used if this is clearly NOT a listing (e.g., homepage, profile)
+
 Use CHAIN-OF-THOUGHT reasoning:
 
 Step 1: ANALYZE THE PAGE CONTENT (Focus on content, not links!)
@@ -452,23 +457,39 @@ Step 3: CONSIDER NAVIGATION DEPTH **CRITICAL**
 
 **DEPTH-BASED RULES (MUST FOLLOW):**
 
-DEPTH 0-1 (Exploration):
-- Can use NAVIGATE_TO to find better sections
-- Can use EXTRACT_LINKS if on a listing page
-- Goal: Find the right listing page
+DEPTH 0 (Seed URL - OPTIMIZATION MODE):
+- **PREFERRED**: EXTRACT_LINKS if this looks like a listing page (news, blog, forum directory)
+- **ALLOWED**: EXTRACT_CONTENT if this is a direct article/thread
+- **FALLBACK**: NAVIGATE_TO only if clearly NOT a listing (homepage, profile, irrelevant hub)
+- **Goal**: Start extraction immediately if possible!
 
-DEPTH 2+ (Extraction ONLY):
+DEPTH 1 (Following Links):
+- **ALLOWED**: EXTRACT_CONTENT (extract from individual articles)
+- **ALLOWED**: EXTRACT_LINKS (if reached a listing page via navigation)
+- **AVOID**: NAVIGATE_TO (prefer extraction at this level)
+- **ALLOWED**: STOP (if irrelevant)
+
+DEPTH 2+ (Deep Extraction ONLY):
 - **FORBIDDEN**: NAVIGATE_TO (already deep enough!)
+- **FORBIDDEN**: EXTRACT_LINKS (too deep for more listings)
 - **ALLOWED**: EXTRACT_CONTENT (if individual article/post)
 - **ALLOWED**: STOP (if irrelevant)
-- **FORBIDDEN**: EXTRACT_LINKS (too deep for more listings)
 - Rule: At depth 2+, you're iterating through a list from depth 1. Extract or skip, don't navigate!
 
 Step 4: CHOOSE OPTIMAL ACTION
 
-ACTION OPTIONS:
+ACTION OPTIONS (prioritized for efficiency):
 
-1. **EXTRACT_CONTENT** ← Use when ONE piece of content with FULL details
+1. **EXTRACT_LINKS** ← **PREFERRED at depth 0** for listing pages (news, blog, forum directory)
+   ✓ Multiple article titles/links visible (2+ items)
+   ✓ Article previews or snippets shown (need to click for full content)
+   ✓ News listing, blog category, forum board, press releases page
+   ✓ This is the MOST EFFICIENT path - extract all relevant links and fetch them!
+   ✗ NOT for: Single article pages, full content pages
+   
+   🔑 KEY TEST at depth 0: See multiple clickable article links? → EXTRACT_LINKS!
+
+2. **EXTRACT_CONTENT** ← Use when ONE piece of content with FULL details
    ✓ Individual article with COMPLETE text (not just headline/snippet)
    ✓ Forum thread with ACTUAL discussion posts (not just thread title)
    ✓ Product page with FULL reviews (not just review summaries)
@@ -479,22 +500,7 @@ ACTION OPTIONS:
    - If FULL content visible → EXTRACT_CONTENT
    - If only titles/previews → EXTRACT_LINKS
 
-2. **EXTRACT_LINKS** ← Use when MULTIPLE items listed (directory/catalog page)
-   ✓ Multiple article titles with brief snippets (need to click to read full articles)
-   ✓ List of thread titles (need to click to read posts/comments)
-   ✓ Gallery of products/items (need to click for details)
-   ✓ News listing, blog index, forum board, category page
-   ✗ NOT for: Individual article/post pages with full content
-   
-   🔑 KEY TEST: Do you see MULTIPLE items you could click into for more details?
-   - YES → EXTRACT_LINKS (get all the URLs, visit them later)
-   - NO → probably EXTRACT_CONTENT or NAVIGATE_TO
-   
-   ⚠️  CRITICAL DISTINCTION:
-   "I see 10 article titles with 1-sentence previews" → EXTRACT_LINKS ✅
-   "I see 1 article with full paragraphs of text" → EXTRACT_CONTENT ✅
-   
-3. **NAVIGATE_TO** ← Use when you need to reach a more specific section
+3. **NAVIGATE_TO** ← **FALLBACK ONLY** - Use when seed URL is NOT a listing (e.g., homepage)
    ✓ Homepage → specific section link (e.g., "News", "Forum", "Reviews")
    ✓ Company profile → better section (e.g., "Press Releases")
    ⚠️  System will provide detailed link options when you choose this action
@@ -558,11 +564,7 @@ Think strategically. Think like an expert information architect. Make the decisi
     
     try:
         # Use GPT-4o for complex reasoning
-        llm = ChatOpenAI(
-            model="gpt-4o",
-            api_key=settings.openai_api_key,
-            temperature=0
-        )
+        llm = get_smart_llm(temperature=0)
         
         response = await llm.ainvoke(prompt)
         response_text = response.content.strip()

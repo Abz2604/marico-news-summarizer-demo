@@ -17,8 +17,8 @@ import logging
 from typing import List, Tuple
 from bs4 import BeautifulSoup
 
-from langchain_openai import ChatOpenAI
 from config import get_settings
+from .llm_factory import get_fast_llm
 
 logger = logging.getLogger(__name__)
 
@@ -103,11 +103,7 @@ Return ONLY a JSON array of indices (no explanation):
     
     try:
         # Use GPT-4o-mini for lightweight filtering (CHEAP)
-        llm = ChatOpenAI(
-            model="gpt-4o-mini",
-            api_key=settings.openai_api_key,
-            temperature=0
-        )
+        llm = get_fast_llm(temperature=0)  # Fast model for content filtering
         
         response = await llm.ainvoke(prompt)
         response_text = response.content.strip()
@@ -205,11 +201,7 @@ Return ONLY JSON array:
 {{"relevant_indices": [0, 5, 12, 18]}}"""
     
     try:
-        llm = ChatOpenAI(
-            model="gpt-4o-mini",
-            api_key=settings.openai_api_key,
-            temperature=0
-        )
+        llm = get_fast_llm(temperature=0)  # Fast model for content filtering
         
         response = await llm.ainvoke(prompt)
         response_text = response.content.strip()

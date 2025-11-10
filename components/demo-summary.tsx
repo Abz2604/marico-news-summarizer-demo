@@ -10,7 +10,6 @@ import { AgentTimeline } from "@/components/agent-timeline"
 interface BriefingData {
   url: string
   prompt: string
-  section?: string
 }
 
 interface DemoSummaryProps {
@@ -86,8 +85,7 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
         new URLSearchParams({
           prompt: briefingData.prompt,
           seed_links: JSON.stringify([briefingData.url]),
-          max_articles: "10",  // Updated from 3 to match new backend default
-          target_section: briefingData.section || "",  // NEW: Pass section
+          max_articles: "10",
         })
     )
 

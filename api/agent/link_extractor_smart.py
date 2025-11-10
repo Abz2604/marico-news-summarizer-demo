@@ -15,8 +15,8 @@ from datetime import datetime, timedelta
 import re
 
 from bs4 import BeautifulSoup
-from langchain_openai import ChatOpenAI
 from config import get_settings
+from .llm_factory import get_smart_llm
 
 logger = logging.getLogger(__name__)
 
@@ -87,13 +87,85 @@ async def extract_relevant_links_with_llm(
         logger.warning("No links found on page")
         return []
     
-    logger.info(f"Found {len(all_links)} total links, analyzing with LLM...")
+    logger.info(f"Found {len(all_links)} total links, applying smart pre-filtering...")
     
-    # Build link list for LLM (truncate if too many to avoid overwhelming the LLM)
-    # Limit to 100 links for better LLM performance
-    links_to_analyze = all_links[:100]
-    if len(all_links) > 100:
-        logger.info(f"⚠️ Truncating from {len(all_links)} to 100 links for LLM analysis")
+    # SMART PRE-FILTERING: Remove obvious non-article links BEFORE sending to LLM
+    def is_likely_article_link(link: dict) -> tuple[bool, int]:
+        """Returns (is_likely_article, priority_score)"""
+        url = link['url'].lower()
+        text = (link['text'] or '').lower()
+        
+        # EXCLUDE obvious non-article patterns
+        exclude_patterns = [
+            '/login', '/signup', '/register', '/auth',
+            'facebook.com', 'twitter.com', 'linkedin.com', 'instagram.com',
+            'youtube.com', 'whatsapp', 'telegram',
+            '/search', '/sitemap', '/contact', '/about', '/privacy', '/terms',
+            '/subscribe', '/newsletter', '/rss', '/feed',
+            'javascript:', 'mailto:', '#',
+        ]
+        
+        # Exclude very short URLs (likely navigation)
+        url_parts = url.split('/')
+        if len(url_parts) <= 4 and not any(char.isdigit() for char in url):
+            return False, 0  # Too short, likely navigation
+        
+        for pattern in exclude_patterns:
+            if pattern in url or pattern in text:
+                return False, 0
+        
+        # PRIORITIZE article-like patterns
+        priority = 0
+        
+        # High priority: URLs with article IDs, dates, or long slugs
+        if any(char.isdigit() for char in url):
+            priority += 30  # Has numbers (article IDs, dates)
+        
+        # URL length (longer = more likely article)
+        if len(url) > 100:
+            priority += 25  # Very long URL
+        elif len(url) > 60:
+            priority += 15  # Long URL
+        
+        # Has meaningful link text (not just "Read more")
+        if text and len(text) > 20:
+            priority += 20  # Good link text
+        
+        # Topic relevance (if topic mentions Marico, prioritize links mentioning it)
+        topic_lower = intent.get('topic', '').lower()
+        if 'marico' in topic_lower:
+            if 'marico' in url or 'marico' in text:
+                priority += 40  # Highly relevant
+        
+        # Article-like URL patterns
+        article_patterns = ['-', '_', 'article', 'post', 'news', 'story', 'report', 'analysis']
+        for pattern in article_patterns:
+            if pattern in url:
+                priority += 5
+        
+        return True, priority
+    
+    # Filter and score links
+    scored_links = []
+    for link in all_links:
+        is_likely, score = is_likely_article_link(link)
+        if is_likely:
+            scored_links.append((link, score))
+    
+    # Sort by priority score (highest first)
+    scored_links.sort(key=lambda x: x[1], reverse=True)
+    
+    logger.info(f"📊 Pre-filtering: {len(all_links)} total → {len(scored_links)} likely articles")
+    
+    # Take top candidates for LLM analysis
+    links_to_analyze = [link for link, score in scored_links[:100]]
+    
+    if len(links_to_analyze) == 0:
+        logger.warning("⚠️ No article-like links found after filtering!")
+        return []
+    
+    if len(scored_links) > 100:
+        logger.info(f"✂️ Sending top 100 article candidates (out of {len(scored_links)} filtered)")
     
     link_list = "\n".join([
         f"  {i+1}. [{link['text'][:80] or 'No text'}] → {link['url']}\n     Context: {link['context'][:100] if link['context'] else 'N/A'}"
@@ -114,25 +186,39 @@ USER INTENT:
 LINKS ON PAGE:
 {link_list}
 
-TASK: Identify which links lead to relevant content.
+TASK: Identify which links lead to INDIVIDUAL ARTICLES/CONTENT (not listing/category pages).
 
-IMPORTANT: Focus primarily on RELEVANCE to the user's intent and target section. 
-Include links that seem relevant even if you cannot determine their publication date.
+🎯 **CRITICAL: WHAT TO LOOK FOR**
+✅ INCLUDE article/content links that have:
+   - LONG URLs with article titles, slugs, or IDs (e.g., /news/.../marico-q2-pat-seen-up-12765223.html)
+   - Specific article headlines in link text (e.g., "Marico Q2 PAT seen up 6.3%...")
+   - Dates, timestamps, or article IDs in URL or context
+   - Unique content identifiers (numbers, article codes)
+
+❌ EXCLUDE navigation/section links like:
+   - Short generic URLs: /news/, /business/, /companies/, /category/tech/
+   - Pure section/category names without specific content
+   - Homepage or directory links
+   - Links ending in just category names (/)
+
+**EXAMPLE GOOD LINKS:**
+- /news/business/marico-reports-strong-q2-earnings-2024-12345.html ✅
+- /articles/trade-spotlight-marico-bharat-forge-analysis ✅  
+- /post/2024/10/marico-launches-new-product ✅
+
+**EXAMPLE BAD LINKS:**
+- /news/ ❌
+- /news/business/ ❌
+- /category/companies/ ❌
+- /section/business-news/ ❌
 
 RULES:
-1. Return links to INDIVIDUAL CONTENT items (not listing pages)
-   - Forums → individual threads/discussions
-   - Blogs → individual posts
-   - News → individual articles
-   - Research → individual reports
-   - Any section → individual items, not category/listing pages
-2. Look for dates in link text or context (e.g., "Oct 17, 2025", "2 days ago")
-   - If dates are visible, include them
-   - If dates are NOT visible, still include the link if it's relevant (we'll filter later)
-3. Score relevance 0.0 to 1.0 based on how well link matches user intent and target section
-4. Return max {max_links} links, ranked by relevance
-5. Skip obvious navigation links, login links, social media links, category/listing pages
-6. IMPORTANT: Prefer to include links even if you're unsure about dates - be generous, not strict
+1. **ONLY** return links to INDIVIDUAL CONTENT (articles, posts, threads)
+2. **SKIP** all navigation, category, section, or listing page links
+3. Article links are typically LONGER and contain specific titles/IDs
+4. Score relevance 0.0 to 1.0 based on topic match
+5. Return max {max_links} links, ranked by relevance
+6. Be generous with dates - include relevant content even if date unclear
 
 OUTPUT FORMAT (JSON only, no markdown):
 {{
@@ -149,11 +235,7 @@ OUTPUT FORMAT (JSON only, no markdown):
     
     try:
         # Use GPT-4o for link analysis (needs reasoning)
-        llm = ChatOpenAI(
-            model="gpt-4o",
-            api_key=settings.openai_api_key,
-            temperature=0
-        )
+        llm = get_smart_llm(temperature=0)  # Smart model for link selection
         
         response = await llm.ainvoke(prompt)
         response_text = response.content.strip()

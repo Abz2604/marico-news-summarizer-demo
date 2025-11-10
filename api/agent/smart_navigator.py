@@ -30,22 +30,27 @@ async def smart_navigate(
     intent: dict,  # From UserIntent.to_dict()
     collected: List[ArticleContent],
     depth: int = 0,
-    max_depth: int = 3,
+    max_depth: int = 2,  # Reduced from 3: optimized for listing pages (depth 0) → articles (depth 1)
     visited: Optional[Set[str]] = None,
     emit_callback: Optional[callable] = None,
     plan: Optional[dict] = None
 ) -> List[ArticleContent]:
     """
-    Recursively navigate and extract content based on LLM decisions.
+    Intelligently navigate and extract content based on LLM decisions.
     
-    This is the core navigation logic that replaces _node_navigate + _node_fetch.
+    OPTIMIZED FOR LISTING PAGES: When given a listing page at depth 0 (news, blog, forum),
+    the system will prefer immediate link extraction (EXTRACT_LINKS) over navigation,
+    resulting in efficient 2-level flow: Listing (depth 0) → Articles (depth 1).
+    
+    FALLBACK NAVIGATION: If seed URL is not a listing (e.g., homepage), NAVIGATE_TO
+    is still available to find the right section before extraction begins.
     
     Args:
         url: Current URL to process
         intent: User intent dictionary
         collected: Articles collected so far
-        depth: Current navigation depth
-        max_depth: Maximum depth allowed
+        depth: Current navigation depth (0=seed, 1=following links, 2=deep)
+        max_depth: Maximum depth allowed (default: 2)
         visited: Set of visited URLs (for cycle detection)
         emit_callback: Callback for event emission
         plan: Optional navigation plan with expected_page_type for context
@@ -281,12 +286,16 @@ async def run_smart_navigation(
     plan: Optional[dict] = None
 ) -> List[ArticleContent]:
     """
-    Entry point for smart navigation.
-    Explores the target section and collects relevant content based on user criteria.
-    Returns whatever is found - no target number, max_articles is just a safety ceiling.
+    Entry point for smart content extraction.
+    
+    OPTIMIZED WORKFLOW:
+    - Listing pages (news, blog, forum) → Extract links immediately (depth 0 → 1)
+    - Non-listing pages (homepage) → Navigate to section, then extract (depth 0 → 1 → 2)
+    
+    Returns whatever content matches user criteria - max_articles is just a safety ceiling.
     
     Args:
-        seed_urls: List of starting URLs
+        seed_urls: List of starting URLs (ideally listing pages for optimal performance)
         intent: User intent dictionary (includes time_range, target_section, etc.)
         max_articles: Safety limit (ceiling) - won't collect more than this
         emit_callback: Optional callback for event emission
@@ -295,7 +304,7 @@ async def run_smart_navigation(
     Returns:
         List of collected ArticleContent objects that match user criteria
     """
-    logger.info(f"🚀 Starting smart navigation with {len(seed_urls)} seed URL(s)")
+    logger.info(f"🚀 Starting smart extraction with {len(seed_urls)} seed URL(s)")
     
     # Ensure intent has max_articles
     intent = {**intent, 'max_articles': max_articles}
@@ -319,7 +328,7 @@ async def run_smart_navigation(
             intent=intent,
             collected=collected,
             depth=0,
-            max_depth=3,
+            max_depth=2,  # Optimized: listing (0) → articles (1), or hub (0) → listing (1) → articles (2)
             visited=visited,
             emit_callback=emit_callback,
             plan=plan
@@ -330,11 +339,11 @@ async def run_smart_navigation(
             logger.info(f"⚠️ Reached safety limit ({len(collected)}/{max_articles}), stopping seed processing")
             break
     
-    logger.info(f"🏁 Smart navigation complete: Found {len(collected)} article(s) matching criteria")
+    logger.info(f"🏁 Smart extraction complete: Found {len(collected)} article(s) matching criteria")
     
     if emit_callback:
         emit_callback({
-            "event": "nav:complete",
+            "event": "extraction:complete",
             "collected": len(collected),
             "max_limit": max_articles
         })

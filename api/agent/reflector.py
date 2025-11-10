@@ -22,8 +22,8 @@ import logging
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 
-from langchain_openai import ChatOpenAI
 from config import get_settings
+from .llm_factory import get_smart_llm
 from .types import ArticleContent
 
 logger = logging.getLogger(__name__)
@@ -173,11 +173,7 @@ Be honest. Be critical. Be metacognitive."""
     
     try:
         # Use GPT-4o for deep reflection (needs intelligence)
-        llm = ChatOpenAI(
-            model="gpt-4o",
-            api_key=settings.openai_api_key,
-            temperature=0
-        )
+        llm = get_smart_llm(temperature=0)  # Smart model for reflection
         
         response = await llm.ainvoke(prompt)
         response_text = response.content.strip()

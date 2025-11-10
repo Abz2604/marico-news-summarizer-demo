@@ -9,8 +9,8 @@ import logging
 from typing import List
 from urllib.parse import urlparse
 
-from langchain_openai import ChatOpenAI
 from config import get_settings
+from .llm_factory import get_fast_llm
 
 from .types import ArticleContent
 
@@ -20,16 +20,12 @@ logger = logging.getLogger(__name__)
 class Deduplicator:
     """Deduplicate articles using semantic similarity (LLM-based)"""
     
-    def __init__(self, openai_api_key: str):
+    def __init__(self, openai_api_key: str = None):
+        """Initialize with Azure OpenAI LLM (openai_api_key param ignored, kept for compatibility)."""
         settings = get_settings()
-        model_name = settings.openai_model or "gpt-4o-mini"
         self.enable_semantic = settings.enable_semantic_dedup
         self.min_articles = max(1, settings.dedup_min_articles)
-        self.llm = ChatOpenAI(
-            model=model_name,
-            temperature=0,
-            api_key=openai_api_key
-        )
+        self.llm = get_fast_llm(temperature=0)  # Fast model for deduplication
     
     async def deduplicate(self, articles: List[ArticleContent]) -> List[ArticleContent]:
         """

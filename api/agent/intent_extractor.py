@@ -23,8 +23,8 @@ Therefore, LLM-direct is the right architectural choice.
 import json
 import logging
 
-from langchain_openai import ChatOpenAI
 from config import get_settings
+from .llm_factory import get_smart_llm
 
 from .intent import (
     UserIntent,
@@ -44,14 +44,10 @@ class IntentExtractor:
     The LLM handles all cases from simple to complex, colloquial to formal.
     """
     
-    def __init__(self, openai_api_key: str):
-        settings = get_settings()
-        model_name = settings.intent_extractor_model or settings.openai_model or "gpt-4o-mini"
-        self.llm = ChatOpenAI(
-            model=model_name,
-            temperature=0,
-            api_key=openai_api_key
-        )
+    def __init__(self, openai_api_key: str = None):
+        """Initialize with Azure OpenAI LLM (openai_api_key param ignored, kept for compatibility)."""
+        # Use fast model (gpt-4o-mini) for intent extraction - it's a simple task
+        self.llm = get_smart_llm(temperature=0)
     
     async def extract_intent(self, prompt: str, max_articles: int = 3) -> UserIntent:
         """

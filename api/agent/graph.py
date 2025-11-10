@@ -9,9 +9,9 @@ import json
 
 logger = logging.getLogger(__name__)
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 
 from config import get_settings
+from .llm_factory import get_smart_llm
 from .types import ArticleContent, SeedLink, SummaryResult
 from .utils import extract_main_text, extract_title
 from .brightdata_fetcher import fetch_url
@@ -159,8 +159,13 @@ async def _node_plan(state: AgentState) -> AgentState:
 
 async def _node_smart_navigate_and_fetch(state: AgentState) -> AgentState:
     """
-    NEW: Smart navigation using LLM-driven decisions.
-    Replaces _node_navigate + _node_fetch with recursive intelligent navigation.
+    Smart extraction using LLM-driven decisions.
+    
+    OPTIMIZED FOR LISTING PAGES:
+    - If seed URL is a listing (news, blog, forum) → Extract links immediately (most efficient)
+    - If seed URL is not a listing (homepage) → Navigate to section, then extract (fallback)
+    
+    Replaced old _node_navigate + _node_fetch with intelligent extraction logic.
     """
     _emit(state, {"event": "smart_nav:init"})
     
@@ -190,15 +195,16 @@ async def _node_smart_navigate_and_fetch(state: AgentState) -> AgentState:
     max_articles = state.get("max_articles", 10)
     intent_dict = intent.to_dict() if hasattr(intent, 'to_dict') else intent
     
-    logger.info(f"🚀 Starting smart navigation: {len(seed_urls)} seed(s), target: {max_articles} articles")
+    logger.info(f"🚀 Starting smart extraction: {len(seed_urls)} seed(s), target: {max_articles} articles")
+    logger.info(f"   Optimization: Prefer direct extraction from listing pages (depth 0 → 1)")
     _emit(state, {
-        "event": "smart_nav:start",
+        "event": "smart_extraction:start",
         "seed_count": len(seed_urls),
         "max_articles": max_articles,
         "target_section": intent_dict.get('target_section', '')
     })
     
-    # Run smart navigation
+    # Run smart extraction (optimized for listing pages)
     try:
         # Create callback for event emission
         def emit_callback(event: dict):
@@ -337,8 +343,8 @@ async def _node_summarize(state: AgentState) -> AgentState:
     if len(articles) < min_required:
         _emit(state, {"event": "summarize:warn", "reason": "few_articles", "count": len(articles)})
 
-    _emit(state, {"event": "summarize:start", "articles": len(articles), "model": settings.openai_model})
-    llm = ChatOpenAI(model=settings.openai_model, api_key=settings.openai_api_key, temperature=0.2)
+    _emit(state, {"event": "summarize:start", "articles": len(articles), "model": "gpt-4o"})
+    llm = get_smart_llm(temperature=0.2)
 
     # Get intent for dynamic formatting
     intent = state.get("intent")
@@ -527,24 +533,28 @@ async def run_agent(
     }
 
     # ═══════════════════════════════════════════════════════════════════════════════
-    # PHASE 2: ADVANCED AGENTIC WORKFLOW
+    # OPTIMIZED INTELLIGENT EXTRACTION WORKFLOW
     # ═══════════════════════════════════════════════════════════════════════════════
     # 1. INIT: Initialize state
-    # 2. PLAN: Strategic thinking before acting  
-    # 3. NAVIGATE: Execute navigation strategy
-    # 4. REFLECT: Evaluate results (metacognition)
+    # 2. PLAN: Strategic extraction planning (identify listing vs non-listing)
+    # 3. EXTRACT: Smart content extraction (prefer direct link extraction)
+    # 4. REFLECT: Evaluate results quality (metacognition)
     # 5. SUMMARIZE: Create final output
     # 6. FINALIZE: Cleanup and logging
+    #
+    # OPTIMIZATION: When given listing pages (news, blog, forum), system extracts
+    # links immediately (depth 0→1) instead of navigating deeper. NAVIGATE_TO remains
+    # available as fallback for non-listing pages (e.g., homepage).
     # ═══════════════════════════════════════════════════════════════════════════════
     
     state = await _node_init(state)
     
-    # PLANNING PHASE: Think strategically before acting
-    logger.info("📋 PHASE 2 AGENT: Planning → Navigate → Reflect → Summarize")
+    # PLANNING PHASE: Strategic extraction planning
+    logger.info("📋 INTELLIGENT AGENT: Planning → Extract → Reflect → Summarize")
     state = await _node_plan(state)
     
-    # NAVIGATION PHASE: Execute smart navigation strategy
-    logger.info("🧠 Executing smart navigation (LLM-driven)")
+    # EXTRACTION PHASE: Smart extraction with listing optimization
+    logger.info("🧠 Executing smart extraction (LLM-driven, optimized for listings)")
     state = await _node_smart_navigate_and_fetch(state)
     
     # REFLECTION PHASE: Evaluate our own results (metacognition)

@@ -35,9 +35,17 @@ class Settings(BaseSettings):
     snowflake_database: Optional[str] = None
     snowflake_schema: Optional[str] = None
 
-    # OpenAI / LLM settings
+    # Azure OpenAI settings (PRIMARY - client provided)
+    azure_openai_key: Optional[str] = Field(default=None, alias="AZURE_OPENAI_KEY")
+    azure_openai_endpoint: str = Field(default="https://milazdalle.openai.azure.com/")
+    azure_openai_api_version: str = Field(default="2024-12-01-preview")
+    # Azure deployments
+    azure_deployment_gpt4o: str = Field(default="gpt-4o")  # For complex reasoning
+    azure_deployment_gpt4o_mini: str = Field(default="gpt-4o-mini")  # For simple tasks
+    
+    # Legacy OpenAI settings (kept for backward compatibility, not used)
     openai_api_key: Optional[str] = None
-    openai_model: str = Field(default="gpt-4.1")
+    openai_model: str = Field(default="gpt-4o")  # Updated default to match Azure
     # Optional per-task overrides (fallback to openai_model if unset)
     intent_extractor_model: Optional[str] = None
     context_extractor_model: Optional[str] = None

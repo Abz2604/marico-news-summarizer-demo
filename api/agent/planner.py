@@ -16,8 +16,8 @@ import logging
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
-from langchain_openai import ChatOpenAI
 from config import get_settings
+from .llm_factory import get_smart_llm
 
 logger = logging.getLogger(__name__)
 
@@ -78,29 +78,43 @@ TARGET ARTICLES: {max_articles}
 STARTING URL: {seed_url}
 
 ═══════════════════════════════════════════════════════════════════════════════
-🎯 YOUR TASK: CREATE A STRATEGIC NAVIGATION PLAN
+🎯 YOUR TASK: CREATE A STRATEGIC EXTRACTION PLAN
 ═══════════════════════════════════════════════════════════════════════════════
 
-Analyze the URL and create a STRATEGIC PLAN before we start navigating.
+Analyze the URL and create a STRATEGIC PLAN before we start extracting content.
+
+🚀 **OPTIMIZATION PRIORITY: LISTING PAGES**
+If the seed URL appears to be a LISTING PAGE (news listing, blog index, forum directory, 
+press releases page, etc.), prefer DIRECT EXTRACTION strategy - extract links from this 
+page immediately rather than navigating further. This is the most efficient approach.
 
 **STEP 1: URL PATTERN ANALYSIS**
 Look at the URL structure and predict:
 - What type of page is this likely to be?
-  Examples:
-  - stockpricequote/company-name → Company profile page
-  - company.com/news → News listing page
-  - forum.com/topic/123 → Forum thread
+  
+  **LISTING PAGES** (prefer direct extraction):
+  - company.com/news → News listing page ✅
+  - blog.com/category/tech → Blog category listing ✅
+  - forum.com/board/nails → Forum thread listing ✅
+  - company.com/press-releases → Press releases listing ✅
+  - site.com/articles → Article directory ✅
+  
+  **CONTENT PAGES** (extract immediately):
+  - forum.com/topic/123 → Individual forum thread
   - blog.com/2024/11/article-title → Individual article
-  - company.com → Homepage
+  
+  **HUB PAGES** (may need navigation):
+  - company.com → Homepage (might need to find news section)
+  - company.com/about → Company profile page (might need to find relevant section)
 
 **STEP 2: STRATEGIC THINKING**
-Given the page type and user intent, what's the BEST navigation strategy?
+Given the page type and user intent, what's the BEST extraction strategy?
 
-Common strategies:
-1. **Direct Extraction**: Seed URL is already the content → extract immediately
-2. **One-Hop Navigation**: Seed is hub → click to section (News/Blog/Forum) → extract
-3. **Two-Hop Deep Dive**: Seed is hub → section listing → individual items → extract
-4. **Search & Filter**: Large listing → filter by date/topic → extract matches
+Recommended strategies (in priority order):
+1. **Direct Extraction** (PREFERRED for listings): Seed URL is a listing page → extract article links immediately → fetch articles
+2. **Direct Content Extraction**: Seed URL is already an article/thread → extract content immediately
+3. **One-Hop Navigation** (fallback): Seed is hub → navigate to listing section → extract links
+4. **Search & Filter**: Large listing → intelligently filter by date/topic → extract matches
 
 **STEP 3: SUCCESS CRITERIA**
 How will we know if we succeeded?
@@ -123,12 +137,12 @@ What could go wrong and what's our backup plan?
 Return ONLY valid JSON (no markdown):
 
 {{
-  "strategy": "One sentence describing the overall approach",
-  "expected_page_type": "company_profile" | "news_listing" | "forum_thread" | "article" | "homepage" | "blog" | "other",
+  "strategy": "One sentence describing the overall approach (prefer 'Direct Extraction' for listings)",
+  "expected_page_type": "news_listing" | "blog_listing" | "forum_listing" | "press_releases_listing" | "article_directory" | "forum_thread" | "article" | "blog_post" | "company_profile" | "homepage" | "other",
   "navigation_steps": [
     "Step 1: What we'll do first",
-    "Step 2: What we'll do next",
-    "Step 3: Final action"
+    "Step 2: What we'll do next (if needed)",
+    "Step 3: Final action (if needed)"
   ],
   "success_criteria": {{
     "min_articles": {max(3, max_articles // 2)},
@@ -140,20 +154,16 @@ Return ONLY valid JSON (no markdown):
     "Fallback 1 if primary fails",
     "Fallback 2 if still failing"
   ],
-  "estimated_depth": 2,
+  "estimated_depth": 1,
   "confidence": 0.85,
-  "reasoning": "2-3 sentence explanation of why this plan makes sense given the URL structure and user intent"
+  "reasoning": "2-3 sentence explanation of why this plan makes sense given the URL structure and user intent. If listing page, emphasize direct extraction efficiency."
 }}
 
 Think strategically. Anticipate. Plan ahead."""
     
     try:
         # Use GPT-4o for strategic planning (needs intelligence)
-        llm = ChatOpenAI(
-            model="gpt-4o",
-            api_key=settings.openai_api_key,
-            temperature=0
-        )
+        llm = get_smart_llm(temperature=0)
         
         response = await llm.ainvoke(prompt)
         response_text = response.content.strip()
@@ -206,15 +216,15 @@ Think strategically. Anticipate. Plan ahead."""
 
 def _create_default_plan(seed_url: str, user_intent: Dict, max_articles: int) -> NavigationPlan:
     """Fallback plan if AI planning fails"""
-    logger.warning("⚠️ Using default navigation plan (AI planning failed)")
+    logger.warning("⚠️ Using default extraction plan (AI planning failed)")
     
     return NavigationPlan(
-        strategy="Explore seed URL and extract relevant content",
+        strategy="Assume listing page and attempt direct extraction",
         expected_page_type="unknown",
         navigation_steps=[
-            "Analyze seed page structure",
-            "Navigate to content sections if needed",
-            "Extract articles matching criteria"
+            "Analyze seed page for article links",
+            "Extract relevant links if found",
+            "Navigate deeper only if necessary"
         ],
         success_criteria={
             "min_articles": max(3, max_articles // 2),
@@ -226,8 +236,8 @@ def _create_default_plan(seed_url: str, user_intent: Dict, max_articles: int) ->
             "Try seed URL itself as content source",
             "Expand time window if needed"
         ],
-        estimated_depth=2,
+        estimated_depth=1,
         confidence=0.5,
-        reasoning="Default plan due to planning error"
+        reasoning="Default plan assuming listing page (planning error fallback)"
     )
 
