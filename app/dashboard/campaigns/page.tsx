@@ -120,7 +120,7 @@ export default function CampaignsPage() {
       setSending(true)
       
       // Send preview to the specified email
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api"}/campaigns/${selectedCampaign.id}/send-preview`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api"}/campaigns/${selectedCampaign.id}/send-preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ preview_email: previewEmail.trim() }),
