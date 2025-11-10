@@ -86,23 +86,214 @@ def extract_all_links(html: str, base_url: str) -> List[Dict[str, str]]:
     return links
 
 
-def clean_html_for_llm(html: str, max_chars: int = 30000) -> str:
+async def _select_navigation_target(
+    available_links: List[Dict],
+    intent: Dict,
+    page_title: str,
+    reasoning: str,
+    llm
+) -> Optional[str]:
     """
-    Clean and truncate HTML for LLM consumption.
-    Remove noise, keep structure hints.
+    Second-phase: Select specific URL when NAVIGATE_TO is chosen.
+    This is called only when needed, avoiding sending all URLs every time.
+    """
+    if not available_links:
+        return None
+    
+    # Prepare link list with URLs (max 50 to keep it manageable)
+    links_text = "\n".join([
+        f"{i+1}. [{link['text'][:60] if link['text'] else 'No text'}]\n   URL: {link['url']}"
+        for i, link in enumerate(available_links[:50])
+    ])
+    
+    target_section = intent.get('target_section', '')
+    topic = intent.get('topic', '')
+    
+    prompt = f"""You decided to NAVIGATE_TO a better section. Now select the specific link.
+
+Current page: {page_title}
+Your reasoning: {reasoning}
+User goal: {topic}
+Target section: {target_section or 'any relevant section'}
+
+Available links (select ONE):
+{links_text}
+
+Select the BEST link to navigate to. Consider:
+- Which link gets closest to the user's goal?
+- Which section/page would have the content they need?
+- Semantic matches (e.g., "nails" section for nail content)
+
+Respond with JSON only:
+{{
+  "selected_url": "full URL of chosen link",
+  "link_number": 1-50,
+  "reason": "Why this link is best (1 sentence)"
+}}"""
+    
+    try:
+        response = await llm.ainvoke(prompt)
+        response_text = response.content.strip()
+        
+        # Handle markdown
+        if response_text.startswith("```"):
+            lines = response_text.split("\n")
+            json_lines = []
+            in_block = False
+            for line in lines:
+                if line.startswith("```"):
+                    in_block = not in_block
+                    continue
+                if in_block or (not line.startswith("```")):
+                    json_lines.append(line)
+            response_text = "\n".join(json_lines)
+        
+        result = json.loads(response_text)
+        selected_url = result.get('selected_url')
+        
+        if selected_url:
+            logger.info(f"✅ Selected: {selected_url[:80]}")
+            logger.info(f"   Reason: {result.get('reason', 'N/A')}")
+            return selected_url
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"URL selection failed: {e}")
+        return None
+
+
+def clean_html_for_llm(html: str, max_chars: int = 8000, url: str = "") -> str:
+    """
+    Smart HTML cleaning that preserves context while removing noise.
+    
+    Strategy:
+    - Keep semantic structure (headers, main content areas)
+    - Remove navigation/footer boilerplate
+    - Keep images as [IMG: alt_text] to preserve context
+    - Keep timestamps/dates (critical for forums/articles)
+    - Preserve forum post structure
     """
     soup = BeautifulSoup(html, 'html.parser')
     
-    # Remove noise
-    for tag in soup(['script', 'style', 'noscript', 'iframe', 'img', 'svg']):
+    # 1. Remove complete noise (no context value)
+    for tag in soup(['script', 'style', 'noscript', 'iframe', 'svg', 'canvas']):
         tag.decompose()
     
-    # Get text with minimal structure
-    text = soup.get_text(separator='\n', strip=True)
+    # 2. Remove common boilerplate (navigation, ads, footers)
+    for tag in soup.find_all(['nav', 'aside', 'footer']):
+        tag.decompose()
     
-    # Truncate
+    # Remove elements with common ad/navigation classes/ids
+    boilerplate_patterns = ['nav', 'menu', 'sidebar', 'footer', 'header', 'ads', 'advertisement']
+    for pattern in boilerplate_patterns:
+        for tag in soup.find_all(class_=lambda x: x and pattern in x.lower()):
+            tag.decompose()
+        for tag in soup.find_all(id=lambda x: x and pattern in x.lower()):
+            tag.decompose()
+    
+    # 3. Replace images with context-preserving text
+    for img in soup.find_all('img'):
+        alt_text = img.get('alt', '').strip()
+        if alt_text:
+            img.replace_with(f"[IMG: {alt_text}]")
+        else:
+            img.decompose()
+    
+    # 4. Extract text with structure markers
+    # Prioritize main content areas
+    main_content = soup.find('main') or soup.find('article') or soup.find(class_=lambda x: x and 'content' in x.lower()) or soup
+    
+    # Build structured text
+    lines = []
+    
+    # 5. SPECIAL HANDLING FOR FORUMS - detect and preserve post structure
+    # IMPORTANT: Be very selective to avoid false positives (comment sections, etc.)
+    
+    # First check: Is this likely a forum based on URL?
+    is_likely_forum_url = any(pattern in url.lower() for pattern in 
+                              ['/forum', 'forum.', 'community', 'discussion', '/thread'])
+    
+    forum_posts = []
+    
+    if is_likely_forum_url:
+        # Only check for forum structure if URL suggests it's a forum
+        # Use VERY specific patterns to avoid false positives
+        forum_post_patterns = ['forum-post', 'thread-post', 'forum_post', 'thread_post', 'message-body', 'post-content']
+        
+        for pattern in forum_post_patterns:
+            forum_posts.extend(main_content.find_all(class_=lambda x: x and pattern.replace('-', '') in x.lower().replace('-', '').replace('_', '')))
+        
+        # Additional check: Look for typical forum structure (author + date + content in same container)
+        for potential_post in main_content.find_all(['div', 'article']):
+            classes = ' '.join(potential_post.get('class', [])).lower()
+            if 'post' in classes and 'author' in str(potential_post)[:500] and ('date' in str(potential_post)[:500] or 'time' in str(potential_post)[:500]):
+                if potential_post not in forum_posts:
+                    forum_posts.append(potential_post)
+    
+    # Require at least 5 posts to confidently identify as forum (avoids comment sections)
+    if len(forum_posts) >= 5:
+        logger.info(f"🗨️  Detected forum structure with {len(forum_posts)} posts - preserving post boundaries")
+        lines.append("═══ FORUM THREAD DETECTED ═══")
+        
+        for i, post in enumerate(forum_posts[:20], 1):  # Max 20 posts to show
+            # Extract author
+            author_elem = post.find(class_=lambda x: x and ('author' in x.lower() or 'user' in x.lower()))
+            author = author_elem.get_text(strip=True) if author_elem else "Unknown"
+            
+            # Extract date
+            date_elem = post.find(['time', 'datetime']) or post.find(class_=lambda x: x and 'date' in x.lower())
+            date = date_elem.get_text(strip=True) if date_elem else ""
+            
+            # Extract post content (text only, no nested metadata)
+            content_elem = post.find(class_=lambda x: x and ('content' in x.lower() or 'text' in x.lower() or 'body' in x.lower()))
+            content = content_elem.get_text(strip=True) if content_elem else post.get_text(strip=True)
+            
+            # Format as clear post
+            lines.append(f"\n--- POST #{i} ---")
+            lines.append(f"Author: {author}")
+            if date:
+                lines.append(f"Date: {date}")
+            lines.append(f"Content: {content[:500]}")  # Limit post length
+        
+        lines.append("\n═══ END FORUM POSTS ═══")
+    else:
+        # 6. Standard extraction (not a forum)
+        # Extract with semantic markers
+        for elem in main_content.descendants:
+            if isinstance(elem, str):
+                text = elem.strip()
+                if text:
+                    lines.append(text)
+            elif elem.name in ['h1', 'h2', 'h3']:
+                text = elem.get_text(strip=True)
+                if text:
+                    lines.append(f"\n## {text}")
+            elif elem.name in ['time', 'datetime']:
+                text = elem.get_text(strip=True)
+                if text:
+                    lines.append(f"[DATE: {text}]")
+        
+        # Fallback: if structured extraction got nothing, use simple text
+        if not lines:
+            lines = [main_content.get_text(separator='\n', strip=True)]
+    
+    # Join and clean up
+    text = '\n'.join(lines)
+    
+    # Remove excessive whitespace
+    import re
+    text = re.sub(r'\n{3,}', '\n\n', text)  # Max 2 newlines
+    text = re.sub(r' {2,}', ' ', text)  # Max 1 space
+    
+    # Truncate intelligently (try to break at sentence/paragraph)
     if len(text) > max_chars:
-        text = text[:max_chars] + "\n... (truncated)"
+        text = text[:max_chars]
+        # Try to break at paragraph
+        last_para = text.rfind('\n\n')
+        if last_para > max_chars * 0.8:  # If we're close enough
+            text = text[:last_para]
+        text += "\n\n... (content continues)"
     
     return text
 
@@ -112,7 +303,8 @@ async def analyze_and_decide(
     url: str,
     intent: Dict,  # From UserIntent.to_dict()
     depth: int,
-    max_depth: int = 3
+    max_depth: int = 3,
+    plan: Optional[Dict] = None
 ) -> PageDecision:
     """
     Analyze a page and decide what action to take.
@@ -125,6 +317,7 @@ async def analyze_and_decide(
         intent: User intent dict with topic, target_section, time_range, etc.
         depth: Current navigation depth
         max_depth: Maximum allowed depth
+        plan: Optional navigation plan with expected_page_type for context
         
     Returns:
         PageDecision with action to take
@@ -134,27 +327,77 @@ async def analyze_and_decide(
     # Extract actual links for validation
     available_links = extract_all_links(html, url)
     
-    # Clean HTML for LLM
-    cleaned_html = clean_html_for_llm(html, max_chars=8000)
+    # Clean HTML for LLM (pass URL for forum detection)
+    cleaned_html = clean_html_for_llm(html, max_chars=8000, url=url)
     
     # Get page title
     soup = BeautifulSoup(html, 'html.parser')
     title_tag = soup.find('title')
     page_title = title_tag.get_text(strip=True) if title_tag else "No title"
     
-    # Build link list for prompt
-    link_list = "\n".join([
-        f"  - [{link['text'][:60] if link['text'] else 'No text'}] → {link['url']}"
-        for link in available_links[:100]  # Max 100 links in prompt
-    ])
+    # Build smart link summary (don't send all links - wasteful!)
+    link_count = len(available_links)
     
-    if not link_list:
-        link_list = "(No links found on page)"
+    if link_count == 0:
+        link_summary = "No clickable links found on page."
+    else:
+        # Categorize links
+        internal_links = [l for l in available_links if url.split('/')[2] in l['url']]
+        external_links = [l for l in available_links if url.split('/')[2] not in l['url']]
+        
+        # Get sample links (max 8 to show diversity)
+        sample_links = available_links[:8]
+        sample_text = "\n".join([
+            f"  - [{link['text'][:50] if link['text'] else 'No text'}]"
+            for link in sample_links
+        ])
+        
+        link_summary = f"""Total links: {link_count} ({len(internal_links)} internal, {len(external_links)} external)
+
+Sample links (showing {len(sample_links)} of {link_count}):
+{sample_text}
+{'... and ' + str(link_count - len(sample_links)) + ' more links' if link_count > len(sample_links) else ''}
+
+Note: Full link list available if you choose NAVIGATE_TO or EXTRACT_LINKS action."""
     
     # Build LLM prompt
     topic = intent.get('topic', '')
     target_section = intent.get('target_section', '')
     time_range_days = intent.get('time_range_days', 7)
+    
+    # Extract plan context if available
+    expected_page_type = None
+    plan_strategy = None
+    if plan:
+        expected_page_type = plan.get('expected_page_type')
+        plan_strategy = plan.get('strategy')
+    
+    # Build plan context string
+    plan_context = ""
+    if expected_page_type and depth == 0:
+        # At depth 0, the plan tells us what type of page we SHOULD be on
+        plan_context = f"""
+╔═══════════════════════════════════════════════════════════════════════════╗
+║ 🎯 STRATEGIC CONTEXT (from planning phase) - HIGHEST PRIORITY            ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+Expected page type: {expected_page_type}
+Strategy: {plan_strategy}
+
+🚨 🚨 🚨 MANDATORY RULE 🚨 🚨 🚨
+The planning phase analyzed this seed URL and determined it's a '{expected_page_type}' page.
+This is MORE RELIABLE than analyzing HTML snippets!
+
+REQUIRED ACTIONS BY PAGE TYPE:
+✅ 'forum_thread' → MUST use EXTRACT_CONTENT (posts are on THIS page)
+✅ 'article' → MUST use EXTRACT_CONTENT (article text is on THIS page)  
+✅ 'forum_listing' → Use EXTRACT_LINKS (need to click into threads)
+✅ 'content_listing' → Use EXTRACT_LINKS (need to click into articles)
+
+⚠️  DO NOT choose EXTRACT_LINKS if plan says 'forum_thread' or 'article'!
+⚠️  The content you need is ALREADY on this page - extract it directly!
+⚠️  Ignoring this will result in navigation loops and failure!
+"""
     
     prompt = f"""You are an expert web navigation strategist with deep understanding of information architecture and content discovery.
 
@@ -164,7 +407,7 @@ async def analyze_and_decide(
 User wants: {topic}
 Target section: {target_section or '(any section - use your judgment)'}
 Time sensitivity: Last {time_range_days} days (recent content only!)
-
+{plan_context}
 ═══════════════════════════════════════════════════════════════════════════════
 📍 CURRENT SITUATION
 ═══════════════════════════════════════════════════════════════════════════════
@@ -173,14 +416,14 @@ Title: {page_title}
 Navigation depth: {depth}/{max_depth} (deeper = more focused)
 
 ═══════════════════════════════════════════════════════════════════════════════
-🔗 AVAILABLE ACTIONS & LINKS
-═══════════════════════════════════════════════════════════════════════════════
-{link_list}
-
-═══════════════════════════════════════════════════════════════════════════════
-📄 PAGE CONTENT SAMPLE
+📄 PAGE CONTENT (Primary decision input - analyze this carefully!)
 ═══════════════════════════════════════════════════════════════════════════════
 {cleaned_html}
+
+═══════════════════════════════════════════════════════════════════════════════
+🔗 LINKS OVERVIEW (Summary only - detailed links provided if you choose navigation)
+═══════════════════════════════════════════════════════════════════════════════
+{link_summary}
 
 ═══════════════════════════════════════════════════════════════════════════════
 🎯 YOUR TASK: STRATEGIC DECISION-MAKING
@@ -188,15 +431,21 @@ Navigation depth: {depth}/{max_depth} (deeper = more focused)
 
 Use CHAIN-OF-THOUGHT reasoning:
 
-Step 1: ANALYZE THE PAGE
-- What type of page is this? (hub, listing, content, profile, etc.)
-- Does it contain the END GOAL content or is it a waypoint?
-- What patterns do you see in the links and content structure?
+Step 1: ANALYZE THE PAGE CONTENT (Focus on content, not links!)
+- What type of page is this based on CONTENT? (hub, listing, individual article/thread, profile, etc.)
+- **CRITICAL**: Count how many distinct items/articles you see:
+  * ONE article with FULL text? → Individual content page
+  * MULTIPLE article titles with snippets? → Listing/directory page
+  * Multiple thread titles? → Forum listing (not thread)
+  * One thread with multiple posts? → Forum thread
+- Key question: Is FULL/COMPLETE information visible, or just previews?
+- If FULL content of ONE item → EXTRACT_CONTENT
+- If MULTIPLE items with previews → EXTRACT_LINKS
 
 Step 2: ASSESS RELEVANCE TO USER INTENT
-- Does this page match what user is looking for?
-- If target_section specified, does this page relate to it?
-- Are we getting closer or further from the goal?
+- Does the page CONTENT match what user is looking for?
+- If target_section specified, is that content VISIBLE here?
+- Are we at the destination or do we need to navigate further?
 
 Step 3: CONSIDER NAVIGATION DEPTH **CRITICAL**
 - Current depth: {depth}/{max_depth}
@@ -219,26 +468,36 @@ Step 4: CHOOSE OPTIMAL ACTION
 
 ACTION OPTIONS:
 
-1. **EXTRACT_CONTENT** ← Use when you're on a page WITH the actual information
-   ✓ Individual article with full text
-   ✓ Forum thread with discussion posts
-   ✓ Blog post with complete content
-   ✓ Press release with full details
-   ✗ NOT for: Navigation pages, directories, listings, tables of contents
-
-2. **EXTRACT_LINKS** ← Use when you're on a DIRECTORY of content
-   ✓ News listing page showing multiple articles
-   ✓ Forum board showing thread titles
-   ✓ Category page with links to posts
-   ✓ Search results page
-   ✗ NOT for: Individual content pages (those should be EXTRACT_CONTENT)
-   ⚠️  CRITICAL: A "list of threads" needs deeper navigation - go INTO the threads
+1. **EXTRACT_CONTENT** ← Use when ONE piece of content with FULL details
+   ✓ Individual article with COMPLETE text (not just headline/snippet)
+   ✓ Forum thread with ACTUAL discussion posts (not just thread title)
+   ✓ Product page with FULL reviews (not just review summaries)
+   ✓ Blog post with COMPLETE content (not just preview)
+   ✗ NOT for: Listings with multiple items, preview/snippet pages, directories
    
-3. **NAVIGATE_TO** ← Use when you need to reach a better section FIRST
-   ✓ Homepage → "News Section" link
-   ✓ Company profile → "Press Releases" link
-   ✓ Generic page → "Forum" or "Blog" section
-   ⚠️  Must select URL from AVAILABLE ACTIONS list above
+   🔑 KEY TEST: Can you read the FULL content here, or do you need to click links to get details?
+   - If FULL content visible → EXTRACT_CONTENT
+   - If only titles/previews → EXTRACT_LINKS
+
+2. **EXTRACT_LINKS** ← Use when MULTIPLE items listed (directory/catalog page)
+   ✓ Multiple article titles with brief snippets (need to click to read full articles)
+   ✓ List of thread titles (need to click to read posts/comments)
+   ✓ Gallery of products/items (need to click for details)
+   ✓ News listing, blog index, forum board, category page
+   ✗ NOT for: Individual article/post pages with full content
+   
+   🔑 KEY TEST: Do you see MULTIPLE items you could click into for more details?
+   - YES → EXTRACT_LINKS (get all the URLs, visit them later)
+   - NO → probably EXTRACT_CONTENT or NAVIGATE_TO
+   
+   ⚠️  CRITICAL DISTINCTION:
+   "I see 10 article titles with 1-sentence previews" → EXTRACT_LINKS ✅
+   "I see 1 article with full paragraphs of text" → EXTRACT_CONTENT ✅
+   
+3. **NAVIGATE_TO** ← Use when you need to reach a more specific section
+   ✓ Homepage → specific section link (e.g., "News", "Forum", "Reviews")
+   ✓ Company profile → better section (e.g., "Press Releases")
+   ⚠️  System will provide detailed link options when you choose this action
    ⚠️  Best at depth 0-1, avoid at depth 2+
 
 4. **STOP** ← Use when path is not productive
@@ -325,6 +584,29 @@ Think strategically. Think like an expert information architect. Make the decisi
         
         # Validate action
         action = PageAction(result['action'])
+        page_type = result.get('page_type', 'other')
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # CONSISTENCY CHECK: Action must match page type
+        # ═══════════════════════════════════════════════════════════════════
+        if action == PageAction.EXTRACT_CONTENT and page_type in ['content_listing', 'forum_listing']:
+            logger.warning(f"⚠️ Inconsistency detected: EXTRACT_CONTENT on {page_type} page!")
+            logger.warning(f"   This is a LISTING page with multiple items - should use EXTRACT_LINKS")
+            logger.warning(f"   Correcting to EXTRACT_LINKS...")
+            action = PageAction.EXTRACT_LINKS
+            result['reasoning'] = f"Corrected: {page_type} pages should extract links to individual items, not content from listing"
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # PLAN ENFORCEMENT at Depth 0: Trust the plan over LLM misidentification
+        # ═══════════════════════════════════════════════════════════════════
+        if depth == 0 and expected_page_type:
+            # At seed URL, plan knows the truth - enforce it!
+            if expected_page_type in ['forum_thread', 'article'] and action != PageAction.EXTRACT_CONTENT:
+                logger.warning(f"⚠️ PLAN OVERRIDE: Plan says '{expected_page_type}' but LLM chose {action}")
+                logger.warning(f"   At depth 0, trusting plan over page analysis")
+                logger.warning(f"   Forcing EXTRACT_CONTENT...")
+                action = PageAction.EXTRACT_CONTENT
+                result['reasoning'] = f"Plan override: Seed URL identified as {expected_page_type} by planning phase - extracting content directly"
         
         # ═══════════════════════════════════════════════════════════════════
         # ENFORCE DEPTH-BASED RULES (Don't trust LLM blindly!)
@@ -346,8 +628,21 @@ Think strategically. Think like an expert information architect. Make the decisi
         target_url = result.get('target_url')
         if action == PageAction.NAVIGATE_TO:
             if not target_url:
-                logger.warning("LLM chose NAVIGATE_TO but no target_url provided, changing to STOP")
-                action = PageAction.STOP
+                # LLM decided to navigate but didn't have URLs to choose from
+                # Make a follow-up query with full link list
+                logger.info("🔄 NAVIGATE_TO chosen - fetching specific URL from full link list...")
+                
+                target_url = await _select_navigation_target(
+                    available_links=available_links,
+                    intent=intent,
+                    page_title=page_title,
+                    reasoning=result.get('reasoning', ''),
+                    llm=llm
+                )
+                
+                if not target_url:
+                    logger.warning("Could not select navigation target, changing to STOP")
+                    action = PageAction.STOP
             else:
                 # Check if URL exists in available links
                 available_urls = {link['url'] for link in available_links}

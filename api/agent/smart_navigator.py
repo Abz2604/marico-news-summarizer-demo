@@ -32,7 +32,8 @@ async def smart_navigate(
     depth: int = 0,
     max_depth: int = 3,
     visited: Optional[Set[str]] = None,
-    emit_callback: Optional[callable] = None
+    emit_callback: Optional[callable] = None,
+    plan: Optional[dict] = None
 ) -> List[ArticleContent]:
     """
     Recursively navigate and extract content based on LLM decisions.
@@ -47,6 +48,7 @@ async def smart_navigate(
         max_depth: Maximum depth allowed
         visited: Set of visited URLs (for cycle detection)
         emit_callback: Callback for event emission
+        plan: Optional navigation plan with expected_page_type for context
         
     Returns:
         Updated list of collected articles
@@ -104,7 +106,8 @@ async def smart_navigate(
             url=url,
             intent=intent,
             depth=depth,
-            max_depth=max_depth
+            max_depth=max_depth,
+            plan=plan
         )
     except Exception as e:
         logger.error(f"Decision failed for {url[:60]}: {e}")
@@ -219,7 +222,8 @@ async def smart_navigate(
                     depth=depth + 1,
                     max_depth=max_depth,
                     visited=visited,
-                    emit_callback=emit_callback
+                    emit_callback=emit_callback,
+                    plan=plan
                 )
                 
                 # Check if we successfully collected an article
@@ -254,7 +258,8 @@ async def smart_navigate(
                 depth=depth + 1,
                 max_depth=max_depth,
                 visited=visited,
-                emit_callback=emit_callback
+                emit_callback=emit_callback,
+                plan=plan
             )
         else:
             logger.warning(f"⚠️  NAVIGATE_TO without target_url")
@@ -272,7 +277,8 @@ async def run_smart_navigation(
     seed_urls: List[str],
     intent: dict,
     max_articles: int = 10,
-    emit_callback: Optional[callable] = None
+    emit_callback: Optional[callable] = None,
+    plan: Optional[dict] = None
 ) -> List[ArticleContent]:
     """
     Entry point for smart navigation.
@@ -284,6 +290,7 @@ async def run_smart_navigation(
         intent: User intent dictionary (includes time_range, target_section, etc.)
         max_articles: Safety limit (ceiling) - won't collect more than this
         emit_callback: Optional callback for event emission
+        plan: Optional navigation plan with expected_page_type for context
         
     Returns:
         List of collected ArticleContent objects that match user criteria
@@ -314,7 +321,8 @@ async def run_smart_navigation(
             depth=0,
             max_depth=3,
             visited=visited,
-            emit_callback=emit_callback
+            emit_callback=emit_callback,
+            plan=plan
         )
         
         # Check if we've hit the safety limit

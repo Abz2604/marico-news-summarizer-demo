@@ -204,11 +204,24 @@ async def _node_smart_navigate_and_fetch(state: AgentState) -> AgentState:
         def emit_callback(event: dict):
             _emit(state, event)
         
+        # Get plan if available (provides expected page type context)
+        plan = state.get("plan")
+        plan_dict = None
+        if plan:
+            if hasattr(plan, '__dict__'):
+                plan_dict = {
+                    'expected_page_type': getattr(plan, 'expected_page_type', None),
+                    'strategy': getattr(plan, 'strategy', None)
+                }
+            elif isinstance(plan, dict):
+                plan_dict = plan
+        
         collected = await run_smart_navigation(
             seed_urls=seed_urls,
             intent=intent_dict,
             max_articles=max_articles,
-            emit_callback=emit_callback
+            emit_callback=emit_callback,
+            plan=plan_dict
         )
         
         logger.info(f"✅ Smart navigation collected {len(collected)} articles")
