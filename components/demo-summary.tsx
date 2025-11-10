@@ -81,7 +81,7 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
 
     // Connect to SSE endpoint
     const eventSource = new EventSource(
-      `${API_BASE}/api/agent/run/stream?` +
+      `${API_BASE}/agent/run/stream?` +
         new URLSearchParams({
           prompt: briefingData.prompt,
           seed_links: JSON.stringify([briefingData.url]),

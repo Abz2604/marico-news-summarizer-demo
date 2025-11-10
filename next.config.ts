@@ -1,22 +1,33 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
-  rewrites: async () => {
+  
+  async rewrites() {
+    const isDevelopment = process.env.NODE_ENV === "development";
+    
+    if (isDevelopment) {
+      // Development: proxy to local FastAPI
+      return [
+        {
+          source: "/api/:path*",
+          destination: "http://127.0.0.1:8000/api/:path*",
+        },
+        {
+          source: "/docs",
+          destination: "http://127.0.0.1:8000/docs",
+        },
+      ];
+    }
+    
+    // Production: proxy to production FastAPI
     return [
       {
         source: "/api/:path*",
-        destination:
-          process.env.NODE_ENV === "development"
-            ? "http://127.0.0.1:8000/api/:path*"
-            : "/api/",
+        destination: "https://insightingtool.maricoapps.biz/backend/:path*",
       },
       {
         source: "/docs",
-        destination:
-          process.env.NODE_ENV === "development"
-            ? "http://127.0.0.1:8000/docs"
-            : "/api/docs",
+        destination: "https://insightingtool.maricoapps.biz/backend/docs",
       },
     ];
   },
