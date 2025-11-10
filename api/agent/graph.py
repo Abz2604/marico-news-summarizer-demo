@@ -240,9 +240,32 @@ async def _node_smart_navigate_and_fetch(state: AgentState) -> AgentState:
         
         # Check if we got any content
         if not collected:
+            intent = state.get("intent")
+            time_range_days = 7  # Default
+            time_range = "last_7_days"  # Default
+            
+            # Extract from UserIntent object (dataclass)
+            if intent:
+                time_range_days = getattr(intent, "time_range_days", 7)
+                time_range = getattr(intent, "time_range", "last_7_days")
+            
+            # Create user-friendly time range message
+            if time_range_days == 0:
+                time_msg = "in the last 24 hours"
+            elif time_range_days == 1:
+                time_msg = "in the last day"
+            elif time_range_days == 7:
+                time_msg = "in the last 7 days"
+            elif time_range_days == 30:
+                time_msg = "in the last 30 days"
+            else:
+                time_msg = f"in the last {time_range_days} days"
+            
             state["error"] = {
                 "code": "no_articles",
-                "message": "Smart navigation could not extract usable content from the provided URLs."
+                "message": f"No articles found {time_msg} matching your criteria. Try expanding the time range or using different search terms.",
+                "time_range_days": time_range_days,
+                "time_range": time_range
             }
             _emit(state, {"event": "smart_nav:no_articles"})
             return state
@@ -568,6 +591,7 @@ async def run_agent(
     state = await _node_finalize(state)
 
     if state.get("error"):
-        return None
+        # Return error state so router can access error details
+        return state
     return state.get("summary")
 

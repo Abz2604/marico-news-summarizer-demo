@@ -224,11 +224,15 @@ async def extract_content_with_llm(
     
     prompt = f"""You are an expert content extraction specialist with deep understanding of web content structures.
 
+⚠️ IMPORTANT: You are analyzing ALREADY FETCHED webpage content provided below. 
+DO NOT attempt to access any websites or URLs. The HTML content has been retrieved 
+and cleaned for you. Your task is to extract information from the PROVIDED CONTENT ONLY.
+
 ═══════════════════════════════════════════════════════════════════════════════
 🎯 MISSION: COMPREHENSIVE CONTENT EXTRACTION
 ═══════════════════════════════════════════════════════════════════════════════
 PAGE TYPE: {page_type}
-URL: {url}
+URL: {url} (for reference only - content is provided below)
 USER'S GOAL: {topic}
 
 ═══════════════════════════════════════════════════════════════════════════════
@@ -458,15 +462,26 @@ CONTENT:
 - Date: {content.publish_date.strftime('%Y-%m-%d') if content.publish_date else 'Unknown'}
 - Preview: {content.content[:500]}
 
-IMPORTANT: 
-- If date validation was already done (skip_date_check=False), focus ONLY on topic/content relevance
-- Don't re-validate the date - assume it's already been checked
-- Only check: Does the content match the user's topic/intent?
+CRITICAL RELEVANCE RULES:
+1. **Primary check:** Does the content topic match what the user wants?
+   - If user wants "AI", and content is about AI → RELEVANT ✅
+   - If user wants "Marico news", and content is about Marico → RELEVANT ✅
+
+2. **Be lenient with specifics:** 
+   - User asks for "recent updates" but content is the article itself → RELEVANT ✅ (they can identify updates from the full content)
+   - User asks for "sections" but content has full article → RELEVANT ✅ (sections are in the article)
+   - User asks for "Q2 earnings" and content mentions earnings → RELEVANT ✅
+
+3. **Only reject if:**
+   - Topic is completely different (user wants cars, content is about cooking)
+   - Content is garbage/spam/navigation
+
+4. **Date is already validated** - don't re-check it here
 
 Answer with JSON only (no markdown):
 {{
   "is_relevant": true/false,
-  "reason": "Brief explanation focusing on topic relevance (1 sentence)"
+  "reason": "Brief explanation (1 sentence)"
 }}"""
     
     try:

@@ -143,29 +143,26 @@ async def extract_relevant_links_with_llm(
             if pattern in url:
                 priority += 5
         
-        return True, priority
+        return True, priority  # Score not used for sorting, just for filtering threshold
     
-    # Filter and score links
-    scored_links = []
+    # Filter links (but PRESERVE ORIGINAL ORDER - listing pages are usually chronological!)
+    filtered_links = []
     for link in all_links:
         is_likely, score = is_likely_article_link(link)
         if is_likely:
-            scored_links.append((link, score))
+            filtered_links.append(link)  # Keep original order from page
     
-    # Sort by priority score (highest first)
-    scored_links.sort(key=lambda x: x[1], reverse=True)
+    logger.info(f"📊 Pre-filtering: {len(all_links)} total → {len(filtered_links)} likely articles (order preserved)")
     
-    logger.info(f"📊 Pre-filtering: {len(all_links)} total → {len(scored_links)} likely articles")
-    
-    # Take top candidates for LLM analysis
-    links_to_analyze = [link for link, score in scored_links[:100]]
+    # Take top candidates for LLM analysis (maintaining page order)
+    links_to_analyze = filtered_links[:100]
     
     if len(links_to_analyze) == 0:
         logger.warning("⚠️ No article-like links found after filtering!")
         return []
     
-    if len(scored_links) > 100:
-        logger.info(f"✂️ Sending top 100 article candidates (out of {len(scored_links)} filtered)")
+    if len(filtered_links) > 100:
+        logger.info(f"✂️ Sending top 100 article candidates (out of {len(filtered_links)} filtered, order preserved)")
     
     link_list = "\n".join([
         f"  {i+1}. [{link['text'][:80] or 'No text'}] → {link['url']}\n     Context: {link['context'][:100] if link['context'] else 'N/A'}"
@@ -181,12 +178,25 @@ async def extract_relevant_links_with_llm(
 USER INTENT:
 - Looking for: {topic}
 - Target section: {target_section or '(any)'}
-- Time range preference: Last {time_range_days} days (but include relevant links even if date is unclear)
+- ⏰ Time range: Last {time_range_days} days {"(PRIORITIZE RECENT!)" if time_range_days <= 7 else ""}
 
 LINKS ON PAGE:
 {link_list}
 
 TASK: Identify which links lead to INDIVIDUAL ARTICLES/CONTENT (not listing/category pages).
+
+⏰ **DATE PRIORITIZATION (CRITICAL FOR TIME-SENSITIVE REQUESTS):**
+If user wants content from last {time_range_days} days, YOU MUST:
+1. Look for date indicators in Context field: "1 DAY AGO", "2 DAYS AGO", "hours ago", "Published: [date]"
+2. **PRIORITIZE links with visible recent dates** - put them FIRST in your ranking
+3. Rank by: RECENCY first, then relevance
+4. Skip links with old dates like "1 MONTH AGO", "2 WEEKS AGO" if recent content is available
+
+Examples in Context:
+- "1 DAY AGO" → HIGH PRIORITY ✅
+- "3 hours ago" → HIGH PRIORITY ✅  
+- "Oct 15, 2025" → Check if within {time_range_days} days
+- "2 weeks ago" → LOWER PRIORITY if recent content available
 
 🎯 **CRITICAL: WHAT TO LOOK FOR**
 ✅ INCLUDE article/content links that have:
@@ -216,9 +226,10 @@ RULES:
 1. **ONLY** return links to INDIVIDUAL CONTENT (articles, posts, threads)
 2. **SKIP** all navigation, category, section, or listing page links
 3. Article links are typically LONGER and contain specific titles/IDs
-4. Score relevance 0.0 to 1.0 based on topic match
-5. Return max {max_links} links, ranked by relevance
-6. Be generous with dates - include relevant content even if date unclear
+4. **RANKING PRIORITY:** For time-sensitive requests (≤7 days), rank by RECENCY FIRST, then relevance
+5. Score relevance 0.0 to 1.0 based on topic match AND recency
+6. Return max {max_links} links, ranked by recency + relevance
+7. Extract detected_date from context if visible (e.g., "1 DAY AGO" → calculate actual date)
 
 OUTPUT FORMAT (JSON only, no markdown):
 {{

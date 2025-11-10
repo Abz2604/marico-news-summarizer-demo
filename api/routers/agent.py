@@ -173,7 +173,7 @@ async def run_agent_stream(
                     target_section=target_section,  # NEW: Pass explicit section
                 )
                 
-                if result:
+                if result and hasattr(result, 'summary_markdown'):
                     # Send complete event with final result
                     await event_queue.put({
                         "event": "complete",
@@ -184,8 +184,17 @@ async def run_agent_stream(
                             "model": result.model,
                         }
                     })
+                elif result and hasattr(result, 'get') and result.get('error'):
+                    # Agent returned error state with details
+                    error_info = result.get('error', {})
+                    await event_queue.put({
+                        "event": "error",
+                        "error": error_info.get('message', 'No usable content extracted.'),
+                        "error_code": error_info.get('code'),
+                        "time_range_days": error_info.get('time_range_days'),
+                    })
                 else:
-                    # Agent returned None (error)
+                    # Agent returned None or unexpected format
                     await event_queue.put({
                         "event": "error",
                         "error": "No usable content extracted from the provided URLs."
