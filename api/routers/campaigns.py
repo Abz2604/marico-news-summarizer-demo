@@ -5,17 +5,20 @@ import logging
 from typing import List, Optional
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+import snowflake.connector
 
 from services import campaigns_service, email_service, briefings_service
+from services.db import get_db_connection
 from services.agent_service import (
     Summary, 
     get_summaries_for_briefings, 
     get_briefing_summary_status
 )
 from agent.graph import run_agent
+from dependencies import get_current_user
 
 
 logger = logging.getLogger(__name__)
@@ -24,6 +27,7 @@ router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
 class CampaignOut(BaseModel):
     id: str
+    user_id: str
     name: str
     status: str
     description: Optional[str]
@@ -57,7 +61,8 @@ class CampaignPreviewResponse(BaseModel):
 def _render_summaries_to_html(
     campaign_name: str, 
     summaries: List[tuple[str, Summary]],  # (briefing_name, summary)
-    missing_briefings: List[str] = None
+    missing_briefings: List[str] = None,
+    failed_briefings: List[tuple[str, str]] = None  # (briefing_name, error_message)
 ) -> str:
     """Renders multiple summaries into a formatted HTML email."""
     missing_briefings = missing_briefings or []
@@ -103,6 +108,22 @@ def _render_summaries_to_html(
         missing_html = f"""
         <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin-bottom: 30px;">
             <strong>⚠️ Incomplete Preview:</strong> The following briefings haven't been run yet: {missing_list}
+        </div>
+        """
+    
+    # Add warning for failed briefings (from scheduled runs)
+    failed_html = ""
+    if failed_briefings:
+        failed_items = []
+        for briefing_name, error_msg in failed_briefings:
+            failed_items.append(f"<li><strong>{briefing_name}</strong>: {error_msg}</li>")
+        failed_list = "".join(failed_items)
+        failed_html = f"""
+        <div style="background-color: #f8d7da; border-left: 4px solid #dc3545; padding: 15px; margin-bottom: 30px;">
+            <strong>⚠️ No Summary Extracted:</strong> The following briefings failed during this run. Please check your briefing configuration.
+            <ul style="margin: 10px 0 0 20px; padding-left: 20px;">
+                {failed_list}
+            </ul>
         </div>
         """
     
@@ -224,6 +245,7 @@ def _render_summaries_to_html(
             </div>
             
             {missing_html}
+            {failed_html}
             {sections_html}
             
             <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #e0e0e0; 
@@ -248,7 +270,11 @@ class CampaignCreate(BaseModel):
 
 
 @router.post("", status_code=201)
-async def create_campaign(payload: CampaignCreate) -> CampaignOut:
+async def create_campaign(
+    payload: CampaignCreate,
+    conn: snowflake.connector.SnowflakeConnection = Depends(get_db_connection),
+    current_user: dict = Depends(get_current_user)
+) -> CampaignOut:
     """Creates a new campaign."""
     try:
         campaign = campaigns_service.create_campaign(
@@ -257,11 +283,19 @@ async def create_campaign(payload: CampaignCreate) -> CampaignOut:
             briefing_ids=payload.briefing_ids,
             recipient_emails=payload.recipient_emails,
             schedule_description=payload.schedule_description,
-            status=payload.status
+            status=payload.status,
+            user_id=current_user["id"],
+            conn=conn
         )
+        
+        # Schedule the campaign if it's active and has a schedule
+        if campaign.status == "active" and campaign.schedule_description:
+            from services.scheduler_service import schedule_campaign
+            schedule_campaign(campaign.id, campaign.schedule_description)
         
         return CampaignOut(
             id=campaign.id,
+            user_id=campaign.user_id,
             name=campaign.name,
             status=campaign.status,
             description=campaign.description,
@@ -277,11 +311,15 @@ async def create_campaign(payload: CampaignCreate) -> CampaignOut:
 
 
 @router.get("")
-async def list_campaigns() -> dict:
-    campaigns_list = campaigns_service.list_campaigns()
+async def list_campaigns(
+    conn: snowflake.connector.SnowflakeConnection = Depends(get_db_connection),
+    current_user: dict = Depends(get_current_user)
+) -> dict:
+    campaigns_list = campaigns_service.list_campaigns(user_id=current_user["id"], conn=conn)
     items = [
         CampaignOut(
             id=c.id,
+            user_id=c.user_id,
             name=c.name,
             status=c.status,
             description=c.description,
@@ -297,13 +335,17 @@ async def list_campaigns() -> dict:
 
 
 @router.get("/{campaign_id}/preview")
-async def preview_campaign_email(campaign_id: str):
+async def preview_campaign_email(
+    campaign_id: str,
+    conn: snowflake.connector.SnowflakeConnection = Depends(get_db_connection),
+    current_user: dict = Depends(get_current_user)
+):
     """
     Smart preview endpoint that checks summary status and returns structured data.
     Frontend can decide how to handle different states (ready/partial/not_ready).
     """
-    # Get campaign
-    campaign = campaigns_service.get_campaign_by_id(campaign_id)
+    # Get campaign (filtered by user)
+    campaign = campaigns_service.get_campaign_by_id(campaign_id, user_id=current_user["id"], conn=conn)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
     
@@ -321,7 +363,7 @@ async def preview_campaign_email(campaign_id: str):
         )
     
     # Get summaries for all briefings
-    summaries_map = get_summaries_for_briefings(briefing_ids)
+    summaries_map = get_summaries_for_briefings(briefing_ids, conn=conn)
     
     # Build briefing status list and collect data
     briefing_statuses = []
@@ -331,13 +373,13 @@ async def preview_campaign_email(campaign_id: str):
     
     for briefing_id in briefing_ids:
         # Get briefing details
-        briefing = briefings_service.get_briefing_by_id(briefing_id)
+        briefing = briefings_service.get_briefing_by_id(briefing_id, conn=conn)
         if not briefing:
             logger.warning(f"Briefing {briefing_id} not found in campaign {campaign_id}")
             continue
         
         # Get status
-        status_info = get_briefing_summary_status(briefing_id)
+        status_info = get_briefing_summary_status(briefing_id, conn=conn)
         summary = summaries_map.get(briefing_id)
         
         briefing_statuses.append(BriefingStatus(
@@ -405,18 +447,23 @@ async def preview_campaign_email(campaign_id: str):
 
 
 @router.post("/{campaign_id}/run-missing")
-async def run_missing_briefings(campaign_id: str, background_tasks: BackgroundTasks):
+async def run_missing_briefings(
+    campaign_id: str, 
+    background_tasks: BackgroundTasks,
+    conn: snowflake.connector.SnowflakeConnection = Depends(get_db_connection),
+    current_user: dict = Depends(get_current_user)
+):
     """
     Helper endpoint to run all briefings that don't have summaries yet.
     Useful for "Run All Missing" button in UI.
     """
-    # Get campaign
-    campaign = campaigns_service.get_campaign_by_id(campaign_id)
+    # Get campaign (filtered by user)
+    campaign = campaigns_service.get_campaign_by_id(campaign_id, user_id=current_user["id"], conn=conn)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
     
     # Get summaries to find missing ones
-    summaries_map = get_summaries_for_briefings(campaign.briefing_ids)
+    summaries_map = get_summaries_for_briefings(campaign.briefing_ids, conn=conn)
     missing_briefing_ids = [
         bid for bid in campaign.briefing_ids 
         if summaries_map.get(bid) is None
@@ -434,12 +481,12 @@ async def run_missing_briefings(campaign_id: str, background_tasks: BackgroundTa
     
     run_ids = []
     for briefing_id in missing_briefing_ids:
-        briefing = briefings_service.get_briefing_by_id(briefing_id)
+        briefing = briefings_service.get_briefing_by_id(briefing_id, conn=conn)
         if not briefing:
             continue
         
         # Create run record
-        run_record = agent_service.create_agent_run(briefing_id, trigger_type="campaign_preview")
+        run_record = agent_service.create_agent_run(briefing_id, trigger_type="campaign_preview", conn=conn)
         run_ids.append(run_record.id)
         
         # Queue the actual agent run
@@ -494,25 +541,30 @@ async def _run_agent_for_briefing_background(briefing_id: str, run_id: str):
 
 
 @router.post("/{campaign_id}/send")
-async def send_campaign_email(campaign_id: str, background_tasks: BackgroundTasks):
+async def send_campaign_email(
+    campaign_id: str, 
+    background_tasks: BackgroundTasks,
+    conn: snowflake.connector.SnowflakeConnection = Depends(get_db_connection),
+    current_user: dict = Depends(get_current_user)
+):
     """
     Send campaign email to all recipients.
     Uses the latest summaries from all briefings in the campaign.
     """
-    # Get campaign
-    campaign = campaigns_service.get_campaign_by_id(campaign_id)
+    # Get campaign (filtered by user)
+    campaign = campaigns_service.get_campaign_by_id(campaign_id, user_id=current_user["id"], conn=conn)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
     
     # Get all summaries
-    summaries_map = get_summaries_for_briefings(campaign.briefing_ids)
+    summaries_map = get_summaries_for_briefings(campaign.briefing_ids, conn=conn)
     
     # Build summaries list with briefing names
     summaries_with_names = []
     missing_names = []
     
     for briefing_id in campaign.briefing_ids:
-        briefing = briefings_service.get_briefing_by_id(briefing_id)
+        briefing = briefings_service.get_briefing_by_id(briefing_id, conn=conn)
         if not briefing:
             continue
         
@@ -565,25 +617,31 @@ class SendPreviewRequest(BaseModel):
 
 
 @router.post("/{campaign_id}/send-preview")
-async def send_preview_email(campaign_id: str, payload: SendPreviewRequest, background_tasks: BackgroundTasks):
+async def send_preview_email(
+    campaign_id: str, 
+    payload: SendPreviewRequest, 
+    background_tasks: BackgroundTasks,
+    conn: snowflake.connector.SnowflakeConnection = Depends(get_db_connection),
+    current_user: dict = Depends(get_current_user)
+):
     """
     Send a preview email to a specific address.
     Uses the same email template as the actual campaign send.
     """
-    # Get campaign
-    campaign = campaigns_service.get_campaign_by_id(campaign_id)
+    # Get campaign (filtered by user)
+    campaign = campaigns_service.get_campaign_by_id(campaign_id, user_id=current_user["id"], conn=conn)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
     
     # Get all summaries
-    summaries_map = get_summaries_for_briefings(campaign.briefing_ids)
+    summaries_map = get_summaries_for_briefings(campaign.briefing_ids, conn=conn)
     
     # Build summaries list with briefing names
     summaries_with_names = []
     missing_names = []
     
     for briefing_id in campaign.briefing_ids:
-        briefing = briefings_service.get_briefing_by_id(briefing_id)
+        briefing = briefings_service.get_briefing_by_id(briefing_id, conn=conn)
         if not briefing:
             continue
         
@@ -627,8 +685,99 @@ async def send_preview_email(campaign_id: str, payload: SendPreviewRequest, back
 
 
 @router.get("/{campaign_id}")
-async def get_campaign(campaign_id: str) -> CampaignOut:
-    # Placeholder for getting a single campaign
-    raise HTTPException(status_code=501, detail="Not implemented")
+async def get_campaign(
+    campaign_id: str,
+    conn: snowflake.connector.SnowflakeConnection = Depends(get_db_connection),
+    current_user: dict = Depends(get_current_user)
+) -> CampaignOut:
+    """Gets a single campaign by ID."""
+    campaign = campaigns_service.get_campaign_by_id(campaign_id, user_id=current_user["id"], conn=conn)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    
+    return CampaignOut(
+        id=campaign.id,
+        user_id=campaign.user_id,
+        name=campaign.name,
+        status=campaign.status,
+        description=campaign.description,
+        briefing_ids=campaign.briefing_ids,
+        recipient_emails=campaign.recipient_emails,
+        schedule_description=campaign.schedule_description,
+        created_at=campaign.created_at,
+        updated_at=campaign.updated_at,
+    )
+
+
+class CampaignUpdate(BaseModel):
+    """Request body for updating a campaign."""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    briefing_ids: Optional[List[str]] = None
+    recipient_emails: Optional[List[str]] = None
+    schedule_description: Optional[str] = None
+    status: Optional[str] = None
+
+
+@router.patch("/{campaign_id}")
+async def update_campaign(
+    campaign_id: str,
+    payload: CampaignUpdate,
+    conn: snowflake.connector.SnowflakeConnection = Depends(get_db_connection),
+    current_user: dict = Depends(get_current_user)
+) -> CampaignOut:
+    """Updates a campaign."""
+    campaign = campaigns_service.update_campaign(
+        campaign_id=campaign_id,
+        user_id=current_user["id"],
+        name=payload.name,
+        description=payload.description,
+        briefing_ids=payload.briefing_ids,
+        recipient_emails=payload.recipient_emails,
+        schedule_description=payload.schedule_description,
+        status=payload.status,
+        conn=conn
+    )
+    
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    
+    # Update scheduler: remove old jobs, add new ones if active
+    from services.scheduler_service import schedule_campaign, unschedule_campaign
+    
+    unschedule_campaign(campaign_id)
+    if campaign.status == "active" and campaign.schedule_description:
+        schedule_campaign(campaign.id, campaign.schedule_description)
+    
+    return CampaignOut(
+        id=campaign.id,
+        user_id=campaign.user_id,
+        name=campaign.name,
+        status=campaign.status,
+        description=campaign.description,
+        briefing_ids=campaign.briefing_ids,
+        recipient_emails=campaign.recipient_emails,
+        schedule_description=campaign.schedule_description,
+        created_at=campaign.created_at,
+        updated_at=campaign.updated_at,
+    )
+
+
+@router.delete("/{campaign_id}")
+async def delete_campaign(
+    campaign_id: str,
+    conn: snowflake.connector.SnowflakeConnection = Depends(get_db_connection),
+    current_user: dict = Depends(get_current_user)
+):
+    """Deletes a campaign."""
+    deleted = campaigns_service.delete_campaign(campaign_id, user_id=current_user["id"], conn=conn)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    
+    # Remove scheduled jobs
+    from services.scheduler_service import unschedule_campaign
+    unschedule_campaign(campaign_id)
+    
+    return {"message": "Campaign deleted successfully"}
 
 

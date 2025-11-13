@@ -16,15 +16,29 @@ class APIError extends Error {
   }
 }
 
+function getAuthToken(): string | null {
+  if (typeof window !== "undefined") {
+    return localStorage.getItem("auth_token")
+  }
+  return null
+}
+
 async function fetchAPI<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`
+  const token = getAuthToken()
+  
+  const headers: HeadersInit = {
+    "Content-Type": "application/json",
+    ...options.headers,
+  }
+  
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`
+  }
   
   const response = await fetch(url, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
+    headers,
   })
 
   if (!response.ok) {
@@ -64,6 +78,7 @@ export interface BriefingListResponse {
 
 export interface Campaign {
   id: string
+  user_id: string
   name: string
   status: string
   description: string | null
@@ -206,6 +221,26 @@ export const apiClient = {
         method: "POST",
       })
     },
+
+    update: async (id: string, data: {
+      name?: string
+      description?: string
+      briefing_ids?: string[]
+      recipient_emails?: string[]
+      schedule_description?: string
+      status?: string
+    }): Promise<Campaign> => {
+      return fetchAPI<Campaign>(`/campaigns/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      })
+    },
+
+    delete: async (id: string): Promise<{ message: string }> => {
+      return fetchAPI<{ message: string }>(`/campaigns/${id}`, {
+        method: "DELETE",
+      })
+    },
   },
 
   // Agent
@@ -222,6 +257,33 @@ export const apiClient = {
     },
   },
 
+  // Agent V2
+  agentV2: {
+    run: async (data: {
+      url: string
+      prompt: string
+      page_type: string
+      max_items?: number
+      time_range_days?: number
+    }): Promise<{
+      items: Array<{
+        url: string
+        title: string
+        content: string
+        publish_date: string | null
+        content_type: string
+        metadata: Record<string, any>
+      }>
+      summary: string | null
+      metadata: Record<string, any> | null
+    }> => {
+      return fetchAPI("/agent-v2/run", {
+        method: "POST",
+        body: JSON.stringify(data),
+      })
+    },
+  },
+
   // Health
   health: {
     check: async (): Promise<{ status: string; app: string; env: string }> => {
@@ -230,6 +292,72 @@ export const apiClient = {
 
     diagnostics: async (): Promise<any> => {
       return fetchAPI("/healthz/diagnostics")
+    },
+  },
+
+  // Auth
+  auth: {
+    signup: async (data: {
+      email: string
+      password: string
+      display_name?: string
+    }): Promise<{
+      access_token: string
+      token_type: string
+      user: {
+        id: string
+        email: string
+        display_name: string | null
+        role: string
+      }
+    }> => {
+      return fetchAPI("/auth/signup", {
+        method: "POST",
+        body: JSON.stringify(data),
+      })
+    },
+
+    login: async (email: string, password: string): Promise<{
+      access_token: string
+      token_type: string
+      user: {
+        id: string
+        email: string
+        display_name: string | null
+        role: string
+      }
+    }> => {
+      // Use FormData for OAuth2PasswordRequestForm compatibility
+      const formData = new FormData()
+      formData.append("username", email) // OAuth2 uses 'username' field
+      formData.append("password", password)
+      
+      // Don't set Content-Type header for FormData - browser will set it with boundary
+      const response = await fetch(`${API_BASE_URL}/auth/login`, {
+        method: "POST",
+        headers: {}, // Empty headers - browser will set Content-Type with boundary
+        body: formData,
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new APIError(
+          errorData.detail || `Login failed: ${response.statusText}`,
+          response.status,
+          errorData
+        )
+      }
+
+      return response.json()
+    },
+
+    me: async (): Promise<{
+      id: string
+      email: string
+      display_name: string | null
+      role: string
+    }> => {
+      return fetchAPI("/auth/me")
     },
   },
 }

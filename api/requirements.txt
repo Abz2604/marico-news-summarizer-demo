@@ -25,3 +25,13 @@ snowflake-connector-python[pandas]
 pyarrow
 markdown
 
+# Authentication
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.0,<5.0.0  # Pin to 4.x for passlib compatibility
+python-jose[cryptography]>=3.3.0
+
+python-multipart
+pydantic[email]
+
+# Scheduling
+APScheduler>=3.10.4

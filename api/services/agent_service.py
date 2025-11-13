@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel
+import snowflake.connector
 
 from services.db import execute, execute_and_fetchone, fetch_dicts
 
@@ -31,13 +33,13 @@ class Summary(BaseModel):
     created_at: datetime
 
 
-def create_agent_run(briefing_id: str, trigger_type: str = "manual") -> AgentRun:
+def create_agent_run(briefing_id: str, trigger_type: str = "manual", conn: Optional[snowflake.connector.SnowflakeConnection] = None) -> AgentRun:
     """Creates a new agent run record and returns its ID."""
     query = """
         INSERT INTO AI_NW_SUMM_AGENT_RUNS (briefing_id, trigger_type, status)
         VALUES (%(briefing_id)s, %(trigger_type)s, 'running')
     """
-    execute(query, {"briefing_id": briefing_id, "trigger_type": trigger_type})
+    execute(query, {"briefing_id": briefing_id, "trigger_type": trigger_type}, conn=conn)
 
     # Fetch the created record to return it. This is not ideal because of potential race conditions.
     fetch_query = """
@@ -47,7 +49,7 @@ def create_agent_run(briefing_id: str, trigger_type: str = "manual") -> AgentRun
         ORDER BY started_at DESC
         LIMIT 1;
     """
-    rows = fetch_dicts(fetch_query, {"briefing_id": briefing_id})
+    rows = fetch_dicts(fetch_query, {"briefing_id": briefing_id}, conn=conn)
     if not rows:
         raise Exception("Failed to retrieve created agent run.")
         
@@ -61,6 +63,7 @@ def save_summary_and_finalize_run(
     bullet_points: list[str],
     citations: list[dict],
     model: str,
+    conn: Optional[snowflake.connector.SnowflakeConnection] = None,
 ) -> Summary:
     """Saves the summary and marks the agent run as complete."""
     
@@ -87,8 +90,8 @@ def save_summary_and_finalize_run(
         "summary_markdown": summary_markdown,
         "bullets_json": bullets_json,
         "citations_json": citations_json
-    })
-    execute(run_update_query, {"model": model, "run_id": run_id})
+    }, conn=conn)
+    execute(run_update_query, {"model": model, "run_id": run_id}, conn=conn)
 
     # Fetch the created summary to return it
     fetch_summary_query = """
@@ -96,7 +99,7 @@ def save_summary_and_finalize_run(
         FROM AI_NW_SUMM_SUMMARIES
         WHERE agent_run_id = %(run_id)s;
     """
-    rows = fetch_dicts(fetch_summary_query, {"run_id": run_id})
+    rows = fetch_dicts(fetch_summary_query, {"run_id": run_id}, conn=conn)
     if not rows:
         raise Exception("Failed to retrieve created summary.")
 
@@ -106,7 +109,7 @@ def save_summary_and_finalize_run(
     return Summary(**row)
 
 
-def get_latest_summary(briefing_id: str) -> Summary | None:
+def get_latest_summary(briefing_id: str, conn: Optional[snowflake.connector.SnowflakeConnection] = None) -> Summary | None:
     """Gets the most recent summary for a briefing."""
     query = """
         SELECT id, agent_run_id, briefing_id, summary_markdown, bullet_points, citations, created_at
@@ -115,7 +118,7 @@ def get_latest_summary(briefing_id: str) -> Summary | None:
         ORDER BY created_at DESC
         LIMIT 1;
     """
-    rows = fetch_dicts(query, {"briefing_id": briefing_id})
+    rows = fetch_dicts(query, {"briefing_id": briefing_id}, conn=conn)
     if not rows:
         return None
     
@@ -125,7 +128,7 @@ def get_latest_summary(briefing_id: str) -> Summary | None:
     return Summary(**row)
 
 
-def get_summaries_for_briefings(briefing_ids: list[str]) -> dict[str, Summary | None]:
+def get_summaries_for_briefings(briefing_ids: list[str], conn: Optional[snowflake.connector.SnowflakeConnection] = None) -> dict[str, Summary | None]:
     """
     Gets the latest summary for each briefing in the list.
     Returns a dict mapping briefing_id -> Summary (or None if no summary exists).
@@ -148,7 +151,7 @@ def get_summaries_for_briefings(briefing_ids: list[str]) -> dict[str, Summary | 
         FROM ranked_summaries
         WHERE rn = 1;
     """
-    rows = fetch_dicts(query, {})
+    rows = fetch_dicts(query, {}, conn=conn)
     
     # Parse JSON fields
     for row in rows:
@@ -163,7 +166,7 @@ def get_summaries_for_briefings(briefing_ids: list[str]) -> dict[str, Summary | 
     return result
 
 
-def get_briefing_summary_status(briefing_id: str) -> dict:
+def get_briefing_summary_status(briefing_id: str, conn: Optional[snowflake.connector.SnowflakeConnection] = None) -> dict:
     """
     Returns status information about a briefing's latest summary.
     Useful for checking if summary exists and how old it is.
@@ -184,7 +187,7 @@ def get_briefing_summary_status(briefing_id: str) -> dict:
         ) s ON b.id = s.briefing_id AND s.rn = 1
         WHERE b.id = %(briefing_id)s;
     """
-    rows = fetch_dicts(query, {"briefing_id": briefing_id})
+    rows = fetch_dicts(query, {"briefing_id": briefing_id}, conn=conn)
     if not rows:
         return {
             "briefing_id": briefing_id,
@@ -204,7 +207,7 @@ def get_briefing_summary_status(briefing_id: str) -> dict:
     }
 
 
-def mark_run_as_failed(run_id: str, error_message: str) -> None:
+def mark_run_as_failed(run_id: str, error_message: str, conn: Optional[snowflake.connector.SnowflakeConnection] = None) -> None:
     """Marks an agent run as failed with an error message."""
     query = """
         UPDATE AI_NW_SUMM_AGENT_RUNS
@@ -213,4 +216,4 @@ def mark_run_as_failed(run_id: str, error_message: str) -> None:
             completed_at = CURRENT_TIMESTAMP()
         WHERE id = %(run_id)s;
     """
-    execute(query, {"run_id": run_id, "error_message": error_message})
+    execute(query, {"run_id": run_id, "error_message": error_message}, conn=conn)

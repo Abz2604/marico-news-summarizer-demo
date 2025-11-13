@@ -1,10 +1,10 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Pause, Play, Trash2, Eye, Edit2, Layers, RefreshCw, Loader2, X } from "lucide-react"
+import { Trash2, Eye, Edit2, RefreshCw, Loader2, X } from "lucide-react"
 import { apiClient, type Briefing } from "@/lib/api-client"
 import { useToast } from "@/hooks/use-toast"
 import { useRouter } from "next/navigation"
@@ -35,9 +35,12 @@ export default function MyBriefingsPage() {
   const [summaryPreview, setSummaryPreview] = useState<SummaryPreview | null>(null)
   const { toast } = useToast()
   const router = useRouter()
+  const hasLoadedRef = useRef(false)
 
-  // Fetch briefings from API
+  // Fetch briefings from API - prevent duplicate calls from React StrictMode
   useEffect(() => {
+    if (hasLoadedRef.current) return
+    hasLoadedRef.current = true
     loadBriefings()
   }, [])
 
@@ -55,28 +58,6 @@ export default function MyBriefingsPage() {
       })
     } finally {
       setLoading(false)
-    }
-  }
-
-  const toggleStatus = async (id: string, currentStatus: string) => {
-    try {
-      const newStatus = currentStatus === "active" ? "paused" : "active"
-      await apiClient.briefings.update(id, { status: newStatus })
-      
-      // Update local state
-      setBriefings(briefings.map((b) => (b.id === id ? { ...b, status: newStatus } : b)))
-      
-      toast({
-        title: "Status updated",
-        description: `Briefing ${newStatus === "active" ? "activated" : "paused"}`,
-      })
-    } catch (error) {
-      console.error("Failed to toggle status:", error)
-      toast({
-        title: "Error",
-        description: "Failed to update briefing status",
-        variant: "destructive",
-      })
     }
   }
 
@@ -312,15 +293,6 @@ export default function MyBriefingsPage() {
                         className="transition-all duration-200 hover:bg-muted bg-transparent"
                       >
                         <Edit2 className="w-4 h-4" />
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => toggleStatus(briefing.id, briefing.status)}
-                        title={briefing.status === "active" ? "Pause" : "Resume"}
-                        className="transition-all duration-200 hover:bg-muted"
-                      >
-                        {briefing.status === "active" ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                       </Button>
                       <Button
                         variant="outline"

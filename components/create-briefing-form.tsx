@@ -12,6 +12,7 @@ import { useRouter } from "next/navigation"
 interface BriefingData {
   url: string
   prompt: string
+  useAgentV2?: boolean
 }
 
 interface CreateBriefingFormProps {
@@ -23,6 +24,7 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
   const [name, setName] = useState("")
   const [url, setUrl] = useState("")
   const [prompt, setPrompt] = useState("")
+  const [useAgentV2, setUseAgentV2] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [isLoading, setIsLoading] = useState(false)
   const [isDemoLoading, setIsDemoLoading] = useState(false)
@@ -61,6 +63,7 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
       const data: BriefingData = {
         url,
         prompt,
+        useAgentV2,
       }
       onBriefingChange(data)
       setIsDemoLoading(false)
@@ -194,6 +197,22 @@ export function CreateBriefingForm({ onBriefingChange, onSave }: CreateBriefingF
               <span>{errors.prompt}</span>
             </div>
           )}
+        </div>
+
+        {/* Agent V2 Toggle */}
+        <div className="space-y-2 animate-in fade-in slide-in-from-top duration-300" style={{ animationDelay: "100ms" }}>
+          <div className="flex items-center gap-3 p-3 border border-input rounded-md bg-background hover:bg-muted/50 transition-colors cursor-pointer" onClick={() => setUseAgentV2(!useAgentV2)}>
+            <input
+              type="checkbox"
+              checked={useAgentV2}
+              onChange={(e) => setUseAgentV2(e.target.checked)}
+              className="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer"
+            />
+            <div className="flex-1">
+              <label className="text-sm font-medium cursor-pointer">Use Agent V2</label>
+              <p className="text-xs text-muted-foreground">Use the new agentic agent with improved link extraction and content processing</p>
+            </div>
+          </div>
         </div>
 
         {/* Action Buttons */}

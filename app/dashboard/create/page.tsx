@@ -8,6 +8,7 @@ import { SuccessBanner } from "@/components/success-banner"
 interface BriefingData {
   url: string
   prompt: string
+  useAgentV2?: boolean
 }
 
 export default function CreateBriefingPage() {

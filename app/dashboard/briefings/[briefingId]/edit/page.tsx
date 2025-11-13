@@ -1,13 +1,11 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useRouter, useParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
-import { Card, CardContent } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { AlertCircle, Loader2, Plus, Trash2, ArrowLeft } from "lucide-react"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { AlertCircle, Loader2, ArrowLeft } from "lucide-react"
 import { apiClient, type Briefing } from "@/lib/api-client"
 import { useToast } from "@/hooks/use-toast"
 
@@ -23,14 +21,14 @@ export default function EditBriefingPage() {
   
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
+  const [url, setUrl] = useState("")
   const [prompt, setPrompt] = useState("")
-  const [seedLinks, setSeedLinks] = useState<string[]>([])
-  const [newLink, setNewLink] = useState("")
-
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const hasLoadedRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (briefingId) {
+    if (briefingId && hasLoadedRef.current !== briefingId) {
+      hasLoadedRef.current = briefingId
       loadBriefing()
     }
   }, [briefingId])
@@ -45,7 +43,8 @@ export default function EditBriefingPage() {
       setName(b.name)
       setDescription(b.description || "")
       setPrompt(b.prompt)
-      setSeedLinks(b.seed_links)
+      // Use first seed link as URL (or empty if none)
+      setUrl(b.seed_links && b.seed_links.length > 0 ? b.seed_links[0] : "")
     } catch (error) {
       console.error("Failed to load briefing:", error)
       toast({
@@ -66,33 +65,22 @@ export default function EditBriefingPage() {
       newErrors.name = "Briefing name is required"
     }
 
+    if (!url.trim()) {
+      newErrors.url = "URL is required"
+    } else {
+      try {
+        new URL(url)
+      } catch {
+        newErrors.url = "Please enter a valid URL"
+      }
+    }
+
     if (!prompt.trim()) {
       newErrors.prompt = "Prompt is required"
     }
 
-    if (seedLinks.length === 0) {
-      newErrors.seedLinks = "At least one seed link is required"
-    }
-
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
-  }
-
-  const handleAddLink = () => {
-    if (newLink.trim()) {
-      try {
-        new URL(newLink)
-        setSeedLinks([...seedLinks, newLink.trim()])
-        setNewLink("")
-        setErrors({ ...errors, seedLinks: "" })
-      } catch {
-        setErrors({ ...errors, newLink: "Please enter a valid URL" })
-      }
-    }
-  }
-
-  const handleRemoveLink = (index: number) => {
-    setSeedLinks(seedLinks.filter((_, i) => i !== index))
   }
 
   const handleSave = async () => {
@@ -105,7 +93,7 @@ export default function EditBriefingPage() {
         name: name.trim(),
         description: description.trim() || undefined,
         prompt: prompt.trim(),
-        seed_links: seedLinks,
+        seed_links: [url.trim()], // Single URL as array
       })
 
       toast({
@@ -134,6 +122,8 @@ export default function EditBriefingPage() {
     )
   }
 
+  const isFormValid = name.trim() && url.trim() && prompt.trim()
+
   return (
     <div className="flex-1 flex flex-col">
       {/* Header */}
@@ -161,7 +151,8 @@ export default function EditBriefingPage() {
           </Button>
           <Button
             onClick={handleSave}
-            disabled={saving}
+            disabled={!isFormValid || saving}
+            className="transition-all duration-200 hover:shadow-md"
           >
             {saving ? (
               <>
@@ -177,148 +168,131 @@ export default function EditBriefingPage() {
 
       {/* Form */}
       <div className="flex-1 p-6 max-w-4xl mx-auto w-full">
-        <div className="space-y-6">
-          {/* Name */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Briefing Name *</label>
-            <Input
-              type="text"
-              placeholder="e.g., Daily Tech News"
-              value={name}
-              onChange={(e) => {
-                setName(e.target.value)
-                if (errors.name) setErrors({ ...errors, name: "" })
-              }}
-            />
-            {errors.name && (
-              <div className="flex gap-2 text-sm text-destructive">
-                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                <span>{errors.name}</span>
-              </div>
-            )}
-          </div>
-
-          {/* Description */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Description (Optional)</label>
-            <Textarea
-              placeholder="Brief description of what this briefing covers..."
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={2}
-            />
-          </div>
-
-          {/* Prompt */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Summarization Prompt *</label>
-            <Textarea
-              placeholder="e.g., Summarize the latest tech news with focus on AI developments..."
-              value={prompt}
-              onChange={(e) => {
-                setPrompt(e.target.value)
-                if (errors.prompt) setErrors({ ...errors, prompt: "" })
-              }}
-              rows={4}
-            />
-            {errors.prompt && (
-              <div className="flex gap-2 text-sm text-destructive">
-                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                <span>{errors.prompt}</span>
-              </div>
-            )}
-          </div>
-
-          {/* Seed Links */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Seed Links *</label>
-            <p className="text-sm text-muted-foreground">
-              URLs where the agent will start gathering information
-            </p>
-            
-            {/* Existing Links */}
-            <div className="space-y-2">
-              {seedLinks.map((link, index) => (
-                <Card key={index}>
-                  <CardContent className="p-3 flex items-center justify-between gap-2">
-                    <span className="text-sm truncate flex-1">{link}</span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleRemoveLink(index)}
-                      className="text-destructive hover:text-destructive"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </CardContent>
-                </Card>
-              ))}
+        <Card className="h-fit shadow-sm hover:shadow-md transition-shadow duration-300">
+          <CardHeader>
+            <CardTitle>Edit Briefing</CardTitle>
+            <CardDescription>Update your automated daily summary</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Name Field */}
+            <div className="space-y-2 animate-in fade-in slide-in-from-top duration-300">
+              <label className="text-sm font-medium">Briefing Name *</label>
+              <Input
+                type="text"
+                placeholder="e.g., Daily Tech News"
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value)
+                  if (errors.name) setErrors({ ...errors, name: "" })
+                }}
+                className="transition-all duration-200 focus:ring-2"
+              />
+              {errors.name && (
+                <div className="flex gap-2 text-sm text-destructive animate-in fade-in duration-200">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>{errors.name}</span>
+                </div>
+              )}
             </div>
 
-            {/* Add New Link */}
-            <div className="flex gap-2">
+            {/* Description Field */}
+            <div className="space-y-2 animate-in fade-in slide-in-from-top duration-300" style={{ animationDelay: "25ms" }}>
+              <label className="text-sm font-medium">Description (Optional)</label>
+              <Input
+                type="text"
+                placeholder="Brief description of what this briefing covers..."
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                className="transition-all duration-200 focus:ring-2"
+              />
+            </div>
+
+            {/* URL Field */}
+            <div className="space-y-2 animate-in fade-in slide-in-from-top duration-300" style={{ animationDelay: "50ms" }}>
+              <label className="text-sm font-medium">Listing Page URL *</label>
+              <p className="text-xs text-muted-foreground">
+                Provide a listing page URL (news section, blog category, forum board, etc.) for optimal performance
+              </p>
               <Input
                 type="url"
-                placeholder="https://example.com"
-                value={newLink}
+                placeholder="e.g., https://company.com/news or https://blog.com/category/tech"
+                value={url}
                 onChange={(e) => {
-                  setNewLink(e.target.value)
-                  if (errors.newLink) setErrors({ ...errors, newLink: "" })
+                  setUrl(e.target.value)
+                  if (errors.url) setErrors({ ...errors, url: "" })
                 }}
-                onKeyPress={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault()
-                    handleAddLink()
-                  }
-                }}
+                className="transition-all duration-200 focus:ring-2"
               />
-              <Button onClick={handleAddLink} variant="outline">
-                <Plus className="w-4 h-4 mr-2" />
-                Add
-              </Button>
+              {errors.url && (
+                <div className="flex gap-2 text-sm text-destructive animate-in fade-in duration-200">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>{errors.url}</span>
+                </div>
+              )}
             </div>
 
-            {errors.newLink && (
-              <div className="flex gap-2 text-sm text-destructive">
-                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                <span>{errors.newLink}</span>
-              </div>
-            )}
+            {/* Prompt Field */}
+            <div className="space-y-2 animate-in fade-in slide-in-from-top duration-300" style={{ animationDelay: "75ms" }}>
+              <label className="text-sm font-medium">Insight Prompt *</label>
+              <p className="text-xs text-muted-foreground">
+                What insights or information are you looking for?
+              </p>
+              <textarea
+                placeholder="e.g., Summarize discussions about the company in the last month, or Find recent product launches and market reactions"
+                value={prompt}
+                onChange={(e) => {
+                  setPrompt(e.target.value)
+                  if (errors.prompt) setErrors({ ...errors, prompt: "" })
+                }}
+                className="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring min-h-24 resize-none transition-all duration-200"
+              />
+              {errors.prompt && (
+                <div className="flex gap-2 text-sm text-destructive animate-in fade-in duration-200">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>{errors.prompt}</span>
+                </div>
+              )}
+            </div>
 
-            {errors.seedLinks && (
-              <div className="flex gap-2 text-sm text-destructive">
-                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                <span>{errors.seedLinks}</span>
-              </div>
-            )}
-          </div>
-
-          {/* Status Info */}
-          {briefing && (
-            <Card>
-              <CardContent className="p-4">
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <p className="text-muted-foreground">Status</p>
-                    <Badge className="mt-1">
-                      {briefing.status.charAt(0).toUpperCase() + briefing.status.slice(1)}
-                    </Badge>
+            {/* Prompting Guide */}
+            <div className="mt-6 p-4 bg-muted/50 rounded-lg border border-border space-y-3 animate-in fade-in slide-in-from-top duration-300" style={{ animationDelay: "300ms" }}>
+              <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                💡 Tips for Writing Effective Prompts
+              </h3>
+              <ul className="space-y-2 text-sm text-muted-foreground">
+                <li className="flex gap-2">
+                  <span className="text-primary font-semibold flex-shrink-0">•</span>
+                  <span><strong>Be specific:</strong> Mention the number of items you want (e.g., "Top 5 stories" instead of "Some stories")</span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="text-primary font-semibold flex-shrink-0">•</span>
+                  <span><strong>Define the format:</strong> Specify if you want bullet points, paragraphs, or a particular structure</span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="text-primary font-semibold flex-shrink-0">•</span>
+                  <span><strong>Set the focus:</strong> Mention specific topics, themes, or angles you're interested in</span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="text-primary font-semibold flex-shrink-0">•</span>
+                  <span><strong>Include context:</strong> Add details about your audience or use case for more tailored summaries</span>
+                </li>
+              </ul>
+              
+              <div className="pt-2 border-t border-border space-y-2">
+                <p className="text-xs font-semibold text-foreground">Examples:</p>
+                <div className="space-y-2">
+                  <div className="p-2 bg-background rounded border border-border">
+                    <p className="text-xs text-foreground italic">"Summarize the top 5 tech industry news stories in bullet points, focusing on AI and machine learning developments"</p>
                   </div>
-                  <div>
-                    <p className="text-muted-foreground">Last Run</p>
-                    <p className="font-medium mt-1">
-                      {briefing.last_run_at 
-                        ? new Date(briefing.last_run_at).toLocaleString()
-                        : "Never"}
-                    </p>
+                  <div className="p-2 bg-background rounded border border-border">
+                    <p className="text-xs text-foreground italic">"Create a brief 3-point summary of recent market updates relevant to retail investors, with emphasis on stock movements"</p>
                   </div>
                 </div>
-              </CardContent>
-            </Card>
-          )}
-        </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </div>
   )
 }
-

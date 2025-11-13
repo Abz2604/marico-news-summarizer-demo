@@ -1,13 +1,13 @@
 "use client"
 
-import { useMemo, useState, useEffect } from "react"
+import { useMemo, useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { apiClient, type Campaign } from "@/lib/api-client"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
-import { Layers, Mail, Users2, Clock, Filter, Loader2, RefreshCw } from "lucide-react"
+import { Layers, Mail, Users2, Clock, Filter, Loader2, RefreshCw, Pause, Play, Edit2, Trash2 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import {
   Dialog,
@@ -41,11 +41,16 @@ export default function CampaignsPage() {
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null)
   const [previewEmail, setPreviewEmail] = useState("")
   const [sending, setSending] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [pausingId, setPausingId] = useState<string | null>(null)
   const router = useRouter()
   const { toast } = useToast()
+  const hasLoadedRef = useRef(false)
 
-  // Fetch campaigns from API
+  // Fetch campaigns from API - prevent duplicate calls from React StrictMode
   useEffect(() => {
+    if (hasLoadedRef.current) return
+    hasLoadedRef.current = true
     loadCampaigns()
   }, [])
 
@@ -165,6 +170,65 @@ export default function CampaignsPage() {
     return date.toLocaleDateString()
   }
 
+  const toggleCampaignStatus = async (campaign: Campaign) => {
+    try {
+      setPausingId(campaign.id)
+      const newStatus = campaign.status === "active" ? "paused" : "active"
+      await apiClient.campaigns.update(campaign.id, { status: newStatus })
+      
+      // Update local state
+      setCampaigns(campaigns.map((c) => (c.id === campaign.id ? { ...c, status: newStatus } : c)))
+      
+      toast({
+        title: "Status updated",
+        description: `Campaign ${newStatus === "active" ? "activated" : "paused"}`,
+      })
+    } catch (error) {
+      console.error("Failed to toggle status:", error)
+      toast({
+        title: "Error",
+        description: "Failed to update campaign status",
+        variant: "destructive",
+      })
+    } finally {
+      setPausingId(null)
+    }
+  }
+
+  const editCampaign = (campaignId: string) => {
+    router.push(`/dashboard/campaigns/${campaignId}/edit`)
+  }
+
+  const deleteCampaign = async (campaign: Campaign) => {
+    if (!confirm(`Are you sure you want to delete "${campaign.name}"? This action cannot be undone.`)) {
+      return
+    }
+
+    try {
+      setDeletingId(campaign.id)
+      await apiClient.campaigns.delete(campaign.id)
+      
+      toast({
+        title: "Campaign deleted",
+        description: `"${campaign.name}" has been permanently removed`,
+      })
+      
+      // Remove from UI
+      setTimeout(() => {
+        setCampaigns(campaigns.filter((c) => c.id !== campaign.id))
+        setDeletingId(null)
+      }, 500)
+    } catch (error) {
+      console.error("Failed to delete campaign:", error)
+      setDeletingId(null)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to delete campaign",
+        variant: "destructive",
+      })
+    }
+  }
+
   return (
     <div className="flex-1 flex flex-col">
       <div className="border-b border-border p-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -273,7 +337,47 @@ export default function CampaignsPage() {
                       <Mail className="w-4 h-4" />
                       Preview Email
                     </Button>
-                    <Button variant="ghost" size="sm" className="hover:bg-muted">Manage</Button>
+                    <div className="flex gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => toggleCampaignStatus(campaign)}
+                        disabled={pausingId === campaign.id}
+                        title={campaign.status === "active" ? "Pause" : "Resume"}
+                        className="hover:bg-muted"
+                      >
+                        {pausingId === campaign.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : campaign.status === "active" ? (
+                          <Pause className="w-4 h-4" />
+                        ) : (
+                          <Play className="w-4 h-4" />
+                        )}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => editCampaign(campaign.id)}
+                        title="Edit"
+                        className="hover:bg-muted"
+                      >
+                        <Edit2 className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => deleteCampaign(campaign)}
+                        disabled={deletingId === campaign.id}
+                        title="Delete"
+                        className="hover:bg-muted text-destructive hover:text-destructive"
+                      >
+                        {deletingId === campaign.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-4 h-4" />
+                        )}
+                      </Button>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -284,7 +388,7 @@ export default function CampaignsPage() {
 
       {/* Preview Modal */}
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        <DialogContent className="!max-w-6xl !h-[90vh] !flex !flex-col !p-0 !bg-background !overflow-hidden">
+        <DialogContent className="!max-w-6xl !h-[90vh] !max-h-[90vh] !flex !flex-col !p-0 !bg-background !overflow-hidden">
           <DialogHeader className="px-6 pt-6 pb-4 border-b border-border flex-shrink-0 bg-background">
             <DialogTitle className="text-foreground">{selectedCampaign?.name} - Email Preview</DialogTitle>
             <DialogDescription>
@@ -293,69 +397,73 @@ export default function CampaignsPage() {
           </DialogHeader>
 
           {previewLoading ? (
-            <div className="flex flex-col items-center justify-center py-12 flex-1 bg-background">
+            <div className="flex flex-col items-center justify-center py-12 flex-1 bg-background min-h-0">
               <Loader2 className="w-8 h-8 animate-spin text-primary mb-4" />
               <p className="text-sm text-foreground font-medium">Loading preview...</p>
               <p className="text-xs text-muted-foreground mt-1">Please wait</p>
             </div>
           ) : previewHtml ? (
-            <div style={{ flex: '1 1 0px', display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-              {/* Scrollable Content Area */}
-              <div style={{ flex: '1 1 0px', overflowY: 'scroll', minHeight: '550px' }} className="px-6 py-4">
-                {/* HTML Preview */}
-                <div className="border-2 border-border rounded-lg shadow-sm mb-4">
-                  <div 
-                    className="p-6 bg-white dark:bg-gray-50"
-                    style={{ 
-                      fontFamily: 'system-ui, -apple-system, sans-serif',
-                      color: '#000000'
-                    }}
-                    dangerouslySetInnerHTML={{ __html: previewHtml }}
-                  />
+            <div style={{ flex: '1 1 0px', display: 'flex', flexDirection: 'row', minHeight: 0, overflow: 'hidden' }}>
+              {/* Email Preview - Left Side (3/4 width) */}
+              <div style={{ width: '75%', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: '1px solid hsl(var(--border))' }}>
+                <div style={{ flex: '1 1 0px', overflowY: 'auto', minHeight: '75vh' }} className="px-6 py-4">
+                  {/* HTML Preview */}
+                  <div className="border-2 border-border rounded-lg shadow-sm">
+                    <div 
+                      className="p-6 bg-white dark:bg-gray-50"
+                      style={{ 
+                        fontFamily: 'system-ui, -apple-system, sans-serif',
+                        color: '#000000'
+                      }}
+                      dangerouslySetInnerHTML={{ __html: previewHtml }}
+                    />
+                  </div>
                 </div>
               </div>
 
-              {/* Send Preview Section - Fixed at bottom */}
-              <div className="flex-shrink-0 px-6 py-4 border-t border-border bg-background">
-                <label className="text-sm font-medium text-foreground block mb-2">Send test email to:</label>
-                <div className="flex gap-2">
-                  <Input
-                    type="email"
-                    placeholder="your.email@example.com"
-                    value={previewEmail}
-                    onChange={(e) => setPreviewEmail(e.target.value)}
-                    onKeyPress={(e) => {
-                      if (e.key === "Enter") {
-                        handleSendPreview()
-                      }
-                    }}
-                    className="bg-background"
-                  />
-                  <Button 
-                    onClick={handleSendPreview}
-                    disabled={sending || !previewEmail.trim()}
-                    className="gap-2 shrink-0"
-                  >
-                    {sending ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Sending...
-                      </>
-                    ) : (
-                      <>
-                        <Mail className="w-4 h-4" />
-                        Send Preview
-                      </>
-                    )}
-                  </Button>
+              {/* Send Preview Section - Right Side (1/4 width) */}
+              <div style={{ width: '25%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} className="bg-background">
+                <div style={{ flex: '1 1 0px', overflowY: 'auto', minHeight: 0 }} className="px-6 py-4">
+                  <label className="text-sm font-medium text-foreground block mb-2">Send test email to:</label>
+                  <div className="flex flex-col gap-2">
+                    <Input
+                      type="email"
+                      placeholder="your.email@example.com"
+                      value={previewEmail}
+                      onChange={(e) => setPreviewEmail(e.target.value)}
+                      onKeyPress={(e) => {
+                        if (e.key === "Enter") {
+                          handleSendPreview()
+                        }
+                      }}
+                      className="bg-background"
+                    />
+                    <Button 
+                      onClick={handleSendPreview}
+                      disabled={sending || !previewEmail.trim()}
+                      className="gap-2 w-full"
+                    >
+                      {sending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Sending...
+                        </>
+                      ) : (
+                        <>
+                          <Mail className="w-4 h-4" />
+                          Send Preview
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Send a test email to verify how it looks in your inbox
+                  </p>
                 </div>
-                <p className="text-xs text-muted-foreground mt-2">
-                  Send a test email to verify how it looks in your inbox
-                </p>
               </div>
             </div>
           ) : (
-            <div className="flex-1 flex items-center justify-center bg-background">
+            <div className="flex-1 flex items-center justify-center bg-background min-h-0">
               <div className="text-center py-12 text-muted-foreground">
                 <Mail className="w-12 h-12 mx-auto mb-4 opacity-50" />
                 <p>No preview available</p>

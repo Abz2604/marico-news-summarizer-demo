@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState, useEffect } from "react"
+import { useMemo, useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
@@ -38,9 +38,12 @@ export default function NewCampaignPage() {
   const [isSaving, setIsSaving] = useState(false)
   const [loadingBriefings, setLoadingBriefings] = useState(true)
   const [availableBriefings, setAvailableBriefings] = useState<Briefing[]>([])
+  const hasLoadedBriefingsRef = useRef(false)
 
-  // Load real briefings from API
+  // Load real briefings from API - prevent duplicate calls from React StrictMode
   useEffect(() => {
+    if (hasLoadedBriefingsRef.current) return
+    hasLoadedBriefingsRef.current = true
     loadBriefings()
   }, [])
 
