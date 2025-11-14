@@ -116,6 +116,7 @@ async def run_agent_v2(payload: AgentV2RunRequest):
                 "content": item.content,
                 "publish_date": item.publish_date.isoformat() if item.publish_date else None,
                 "content_type": item.content_type,
+                "summary": item.summary,  # Per-article summary
                 "metadata": item.metadata or {}
             }
             for item in response.items
@@ -245,6 +246,7 @@ async def run_agent_v2_stream(
                         "content": item.content,
                         "publish_date": item.publish_date.isoformat() if item.publish_date else None,
                         "content_type": item.content_type,
+                        "summary": item.summary,  # Per-article summary
                         "metadata": item.metadata or {}
                     }
                     for item in response.items

@@ -107,25 +107,14 @@ export default function NewCampaignPage() {
         : "Not scheduled"
       
       // Create campaign via API
-      const payload = {
+      await apiClient.campaigns.create({
         name: name.trim(),
         description: description.trim() || undefined,
         briefing_ids: selectedBriefingIds,
         recipient_emails: recipients,
         schedule_description: scheduleDesc,
         status: "active"
-      }
-      
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api"}/campaigns`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
       })
-      
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({}))
-        throw new Error(error.detail || "Failed to create campaign")
-      }
       
       toast({
         title: "Campaign created!",

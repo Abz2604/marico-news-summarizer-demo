@@ -33,7 +33,7 @@ interface SourceWithBullets {
   age_days?: number
   bullets: string[]
   label: string
-  fullContent?: string  // Full article content for expansion
+  summary?: string  // Per-article summary
 }
 
 interface TimelineStep {
@@ -112,9 +112,26 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
       })
     }
 
-    // Extract time range from prompt if mentioned (e.g., "past 7 days")
-    const timeRangeMatch = briefingData.prompt.match(/(\d+)\s*days?/i)
-    const timeRangeDays = timeRangeMatch ? parseInt(timeRangeMatch[1]) : undefined
+    // Extract time range from prompt if mentioned (e.g., "past 7 days", "last 2 months")
+    let timeRangeDays: number | undefined = undefined
+    
+    // Try to match days first
+    const daysMatch = briefingData.prompt.match(/(\d+)\s*days?/i)
+    if (daysMatch) {
+      timeRangeDays = parseInt(daysMatch[1])
+    } else {
+      // Try to match months and convert to days (1 month = 30 days)
+      const monthsMatch = briefingData.prompt.match(/(\d+)\s*months?/i)
+      if (monthsMatch) {
+        timeRangeDays = parseInt(monthsMatch[1]) * 30
+      } else {
+        // Try to match weeks and convert to days
+        const weeksMatch = briefingData.prompt.match(/(\d+)\s*weeks?/i)
+        if (weeksMatch) {
+          timeRangeDays = parseInt(weeksMatch[1]) * 7
+        }
+      }
+    }
 
     // Build SSE URL
     const params = new URLSearchParams({
@@ -189,11 +206,27 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
             break
 
           case "extract_links:complete":
+            // Mark "Filtering by Topic" as complete
+            setTimeline((prev) =>
+              prev.map((step) =>
+                step.name === "Filtering by Topic" && step.status === "active"
+                  ? { ...step, status: "complete" as TimelineStep["status"] }
+                  : step
+              )
+            )
             addTimelineStep("Extracting Links", "complete", `Found ${data.links_found} relevant links`)
             setProgress(60)
             break
 
           case "fetch_article:start":
+            // Mark previous fetching article steps as complete
+            setTimeline((prev) =>
+              prev.map((step) =>
+                step.name.startsWith("Fetching Article") && step.status === "active"
+                  ? { ...step, status: "complete" as TimelineStep["status"] }
+                  : step
+              )
+            )
             addTimelineStep(`Fetching Article ${data.article_num}/${data.total_links}`, "active", data.title || data.url)
             setCurrentStep("fetching")
             setProgress(60 + (data.article_num / data.total_links) * 20)
@@ -201,6 +234,10 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
 
           case "fetch_article:extracting":
             addTimelineStep(`Fetching Article ${data.article_num}/${data.total_links}`, "active", "Extracting content...")
+            break
+
+          case "fetch_article:summarizing":
+            addTimelineStep(`Fetching Article ${data.article_num}/${data.total_links}`, "active", "Generating summary...")
             break
 
           case "fetch_article:complete":
@@ -213,16 +250,22 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
             break
 
           case "check_goal:start":
-            addTimelineStep("Evaluating Progress", "active", `${data.extracted_items}/${data.target_items} items extracted`)
+            // Create unique step name with iteration number
+            const iterationNum = data.iteration || 1
+            addTimelineStep(`Evaluating Progress (Iteration ${iterationNum})`, "active", `${data.extracted_items}/${data.target_items} items extracted`)
             setProgress(85)
             break
 
           case "check_goal:decision":
-            addTimelineStep("Evaluating Progress", "active", data.reasoning || `Quality: ${(data.quality_score * 100).toFixed(0)}%`)
+            // Update the same iteration step
+            const iterationNum2 = data.iteration || 1
+            addTimelineStep(`Evaluating Progress (Iteration ${iterationNum2})`, "active", data.reasoning || `Quality: ${(data.quality_score * 100).toFixed(0)}%`)
             break
 
           case "check_goal:done":
-            addTimelineStep("Evaluating Progress", "complete", `Goal reached! Quality: ${(data.quality_score * 100).toFixed(0)}%`)
+            // Mark the iteration step as complete
+            const iterationNum3 = data.iteration || 1
+            addTimelineStep(`Evaluating Progress (Iteration ${iterationNum3})`, "complete", `Goal reached! Quality: ${(data.quality_score * 100).toFixed(0)}%`)
             setProgress(90)
             break
 
@@ -258,11 +301,11 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
             // Process sources and bullets
             const sourceMap = new Map<string, SourceWithBullets>()
 
-            // Store full content mapping from items
-            const contentMap = new Map<string, string>()
+            // Store summary mapping from items
+            const summaryMap = new Map<string, string>()
             data.data.items.forEach((item: any, index: number) => {
               const label = `[${index + 1}]`
-              contentMap.set(label, item.content || "")
+              summaryMap.set(label, item.summary || "")
             })
 
             transformed.citations.forEach((citation, index) => {
@@ -277,7 +320,7 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
                   age_days: citation.age_days,
                   bullets: [],
                   label: citation.label,
-                  fullContent: contentMap.get(citation.label),
+                  summary: summaryMap.get(citation.label),
                 })
               } catch {
                 sourceMap.set(citation.label, {
@@ -288,7 +331,7 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
                   age_days: citation.age_days,
                   bullets: [],
                   label: citation.label,
-                  fullContent: contentMap.get(citation.label),
+                  summary: summaryMap.get(citation.label),
                 })
               }
             })
@@ -513,7 +556,7 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
                   age_days: citation.age_days,
                   bullets: [],
                   label: citation.label,
-                  fullContent: undefined, // V1 doesn't provide full content
+                  summary: undefined, // V1 doesn't provide per-article summaries
                 })
               } catch {
                 sourceMap.set(citation.label, {
@@ -524,7 +567,7 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
                   age_days: citation.age_days,
                   bullets: [],
                   label: citation.label,
-                  fullContent: undefined, // V1 doesn't provide full content
+                  summary: undefined, // V1 doesn't provide per-article summaries
                 })
               }
             })
@@ -601,6 +644,7 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
         content: string
         publish_date: string | null
         content_type: string
+        summary?: string | null  // Per-article summary
         metadata: Record<string, any>
       }>
       summary: string | null
@@ -684,80 +728,6 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
     )
   }
 
-  // Expandable Bullet Component
-  const ExpandableBullet = ({ 
-    bullet, 
-    fullContent 
-  }: { 
-    bullet: string
-    fullContent?: string 
-  }) => {
-    const [isExpanded, setIsExpanded] = useState(false)
-    const TRUNCATE_LENGTH = 200
-
-    // If no full content, just show the bullet as-is (may be truncated)
-    if (!fullContent) {
-      const shouldTruncate = bullet.length > TRUNCATE_LENGTH
-      const truncatedBullet = shouldTruncate 
-        ? bullet.substring(0, TRUNCATE_LENGTH) + "..."
-        : bullet
-
-      return (
-        <div className="flex gap-3 p-2 rounded-md hover:bg-muted/50 transition-colors">
-          <span className="text-primary font-semibold flex-shrink-0 text-sm">•</span>
-          <div className="flex-1">
-            <p className="text-sm text-foreground">{truncatedBullet}</p>
-          </div>
-        </div>
-      )
-    }
-
-    // If full content exists and is short, show it all
-    if (fullContent.length <= TRUNCATE_LENGTH) {
-      return (
-        <div className="flex gap-3 p-2 rounded-md hover:bg-muted/50 transition-colors">
-          <span className="text-primary font-semibold flex-shrink-0 text-sm">•</span>
-          <p className="text-sm text-foreground">{bullet}</p>
-        </div>
-      )
-    }
-
-    // Full content exists and is long - show expandable version
-    const truncatedBullet = bullet.length > TRUNCATE_LENGTH 
-      ? bullet.substring(0, TRUNCATE_LENGTH) + "..."
-      : bullet
-
-    return (
-      <div className="flex gap-3 p-2 rounded-md hover:bg-muted/50 transition-colors">
-        <span className="text-primary font-semibold flex-shrink-0 text-sm">•</span>
-        <div className="flex-1 space-y-2">
-          <div className="text-sm text-foreground">
-            {isExpanded ? (
-              <div className="space-y-2">
-                <p className="font-medium mb-2">{bullet.split(' - ')[0] || bullet}</p>
-                <p className="whitespace-pre-wrap text-foreground/90 leading-relaxed">
-                  {fullContent}
-                </p>
-              </div>
-            ) : (
-              <>
-                {truncatedBullet}
-                {bullet.length > TRUNCATE_LENGTH && (
-                  <span className="text-muted-foreground">...</span>
-                )}
-              </>
-            )}
-          </div>
-          <button
-            onClick={() => setIsExpanded(!isExpanded)}
-            className="text-xs text-primary hover:text-primary/80 font-medium transition-colors underline"
-          >
-            {isExpanded ? "Read less" : "Read more"}
-          </button>
-        </div>
-      </div>
-    )
-  }
 
   if (!briefingData) {
     return (
@@ -812,9 +782,22 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
           <CollapsibleLog title="Agent Execution Log" steps={timeline} />
         )}
 
-        {/* Source Cards with Bullets */}
+        {/* Overall Summary (optional - shown if available, but per-article summaries are primary) */}
+        {!isStreaming && summaryMd && sourcesWithBullets.length === 0 && (
+          <div className="space-y-2">
+            <div className="p-4 bg-muted/30 rounded-lg border border-border">
+              <div className="prose prose-sm max-w-none dark:prose-invert">
+                <div className="text-sm whitespace-pre-wrap leading-relaxed">{summaryMd}</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Source Cards with Individual Summaries */}
         {sourcesWithBullets.length > 0 && (
-          <div className="space-y-4">
+          <div className="space-y-3">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Sources</p>
+            <div className="space-y-3">
             {sourcesWithBullets.slice(0, displayedSourcesCount).map((source, sourceIndex) => (
               <div
                 key={sourceIndex}
@@ -851,37 +834,27 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
                   <ExternalLink className="w-4 h-4 text-muted-foreground group-hover:text-primary flex-shrink-0 transition-all duration-200 group-hover:translate-x-0.5" />
                 </a>
 
-                {/* Bullets for this Source */}
-                <div className="space-y-2 pl-2">
-                  {source.bullets.length > 0 ? (
-                    source.bullets.map((bullet, bulletIndex) => (
-                      <ExpandableBullet
-                        key={bulletIndex}
-                        bullet={bullet}
-                        fullContent={source.fullContent}
-                      />
-                    ))
-                  ) : source.fullContent ? (
-                    <ExpandableBullet
-                      bullet={`${source.title} - Summary`}
-                      fullContent={source.fullContent}
-                    />
-                  ) : (
-                    <div className="p-2 text-xs text-muted-foreground italic">
-                      Article analyzed - key points may be synthesized in other bullets
+                  {/* Article Summary */}
+                  {source.summary && (
+                    <div className="pl-2 pt-2 border-t border-border/50">
+                      <p className="text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap">
+                        {source.summary}
+                      </p>
                     </div>
                   )}
                 </div>
+              ))}
               </div>
-            ))}
           </div>
         )}
 
-        {/* Summary markdown fallback (for errors or non-bullet responses) */}
+        {/* Summary markdown fallback (for errors or when no sources) */}
         {sourcesWithBullets.length === 0 && !isStreaming && summaryMd && (
           <div className="space-y-2">
-            <div className="p-3 bg-muted rounded-lg">
-              <div className="text-sm whitespace-pre-wrap">{summaryMd}</div>
+            <div className="p-4 bg-muted/30 rounded-lg border border-border">
+              <div className="prose prose-sm max-w-none dark:prose-invert">
+                <div className="text-sm whitespace-pre-wrap leading-relaxed">{summaryMd}</div>
+              </div>
             </div>
           </div>
         )}

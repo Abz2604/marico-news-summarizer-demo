@@ -191,6 +191,20 @@ export const apiClient = {
       return fetchAPI<CampaignListResponse>("/campaigns")
     },
 
+    create: async (data: {
+      name: string
+      description?: string
+      briefing_ids: string[]
+      recipient_emails: string[]
+      schedule_description?: string
+      status?: string
+    }): Promise<Campaign> => {
+      return fetchAPI<Campaign>("/campaigns", {
+        method: "POST",
+        body: JSON.stringify(data),
+      })
+    },
+
     get: async (id: string): Promise<Campaign> => {
       return fetchAPI<Campaign>(`/campaigns/${id}`)
     },

@@ -17,6 +17,93 @@ from .ai_factory import get_ai_factory
 
 logger = logging.getLogger(__name__)
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HELPER FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def summarize_article(
+    title: str,
+    content: str,
+    url: str,
+    user_prompt: str,
+    topic: str
+) -> str:
+    """
+    Generate a concise summary for a single article.
+    
+    Args:
+        title: Article title
+        content: Full article content
+        url: Article URL
+        user_prompt: User's original request/prompt
+        topic: Topic being searched
+        
+    Returns:
+        Summary string (100-150 words)
+    """
+    try:
+        ai_factory = get_ai_factory()
+        llm = ai_factory.get_smart_llm(temperature=0)
+        
+        # Limit content size for summarization (keep it focused)
+        content_preview = content[:2000] if len(content) > 2000 else content
+        
+        # Determine if user has a specific request
+        has_specific_request = len(user_prompt) > 20 and not user_prompt.lower().startswith("find")
+        
+        if has_specific_request:
+            prompt = f"""Create a concise summary of this article that addresses the user's specific request.
+
+USER REQUEST: {user_prompt}
+TOPIC: {topic}
+
+ARTICLE:
+Title: {title}
+URL: {url}
+Content: {content_preview}
+
+TASK: Create a focused summary (100-150 words) that:
+1. Directly addresses how this article relates to the user's request: "{user_prompt}"
+2. Highlights the most relevant information from the article
+3. Is concise and well-structured
+4. Uses clear, readable language
+
+Return ONLY the summary text (no markdown, no JSON, no extra formatting)."""
+        else:
+            prompt = f"""Create a concise summary of this article.
+
+TOPIC: {topic}
+
+ARTICLE:
+Title: {title}
+URL: {url}
+Content: {content_preview}
+
+TASK: Create a medium-sized summary (100-150 words) that:
+1. Captures the main points and key information
+2. Is well-structured and readable
+3. Focuses on the most important details
+4. Uses clear, concise language
+
+Return ONLY the summary text (no markdown, no JSON, no extra formatting)."""
+        
+        response = await llm.ainvoke(prompt)
+        summary = response.content.strip()
+        
+        # Clean up any markdown formatting that might have been added
+        if summary.startswith("```"):
+            lines = summary.split("\n")
+            summary = "\n".join([l for l in lines if not l.startswith("```")])
+        
+        logger.info(f"Generated summary for article: {title[:50]} ({len(summary)} chars)")
+        return summary
+        
+    except Exception as e:
+        logger.error(f"Failed to summarize article {title[:50]}: {e}")
+        # Fallback: return a simple excerpt
+        return content[:200] + "..." if len(content) > 200 else content
+
 # Global event callback (set by streaming endpoint)
 _event_callback: Optional[Callable[[dict], None]] = None
 
@@ -239,32 +326,67 @@ async def fetch_article_node(state: AgentState) -> AgentState:
         )
         
         if content:
-            # Additional date filtering (content extractor may find dates not visible on listing page)
+            # Date filtering: Prefer link's detected_date (from listing page) over content.publish_date (from article page)
+            # The listing page date is more reliable for "recent" articles (e.g., "2 days ago")
+            # The article page might have an old publication date that doesn't reflect recent updates
+            link_date = None
+            if link.get('detected_date'):
+                # Link date might be stored as ISO string or datetime
+                if isinstance(link['detected_date'], str):
+                    try:
+                        link_date = datetime.fromisoformat(link['detected_date'])
+                    except Exception:
+                        pass
+                elif isinstance(link['detected_date'], datetime):
+                    link_date = link['detected_date']
+            
+            # Use link date if available, otherwise fall back to content date
+            article_date = link_date if link_date else content.publish_date
+            
             if state['goal'].get('time_range_days'):
                 cutoff = datetime.now() - timedelta(days=state['goal']['time_range_days'])
-                if content.publish_date and content.publish_date < cutoff:
-                    logger.warning(f"[Node: fetch_article] ❌ SKIPPING article (too old): {content.publish_date} < {cutoff}")
+                if article_date and article_date < cutoff:
+                    logger.warning(f"[Node: fetch_article] ❌ SKIPPING article (too old): {article_date} < {cutoff}")
                     logger.warning(f"  URL: {link_url}")
                     logger.warning(f"  Title: {content.title[:80]}")
+                    logger.warning(f"  Date source: {'link (listing page)' if link_date else 'content (article page)'}")
                     _emit_event("fetch_article:skipped", {
                         "article_num": article_num,
                         "url": link_url,
                         "title": content.title[:80],
                         "reason": "Date too old",
-                        "publish_date": content.publish_date.isoformat() if content.publish_date else None
+                        "publish_date": article_date.isoformat() if article_date else None
                     })
                     state['current_link_index'] += 1
                     return state
-                elif content.publish_date:
-                    logger.info(f"[Node: fetch_article] ✅ Date OK: {content.publish_date} >= {cutoff}")
+                elif article_date:
+                    logger.info(f"[Node: fetch_article] ✅ Date OK: {article_date} >= {cutoff} (source: {'link' if link_date else 'content'})")
             
-            # Convert to dict for state
+            # Generate per-article summary
+            _emit_event("fetch_article:summarizing", {
+                "article_num": article_num,
+                "url": link_url,
+                "title": content.title[:80]
+            })
+            
+            article_summary = await summarize_article(
+                title=content.title,
+                content=content.content,
+                url=content.url,
+                user_prompt=state['prompt'],
+                topic=state['goal']['topic']
+            )
+            
+            # Convert to dict for state (include summary)
+            # Use link date if available (more reliable), otherwise use content date
+            final_publish_date = link_date if link_date else content.publish_date
             content_dict = {
                 'url': content.url,
                 'title': content.title,
                 'content': content.content,
-                'publish_date': content.publish_date.isoformat() if content.publish_date else None,
+                'publish_date': final_publish_date.isoformat() if final_publish_date else None,
                 'content_type': content.content_type,
+                'summary': article_summary,  # Per-article summary
                 'metadata': content.metadata or {}
             }
             
@@ -433,6 +555,7 @@ Return ONLY JSON (no markdown):
         if decision == 'done':
             logger.info(f"[Node: check_goal] Goal reached! Quality: {state['quality_score']:.2f}")
             _emit_event("check_goal:done", {
+                "iteration": state['iteration'],
                 "quality_score": state['quality_score'],
                 "extracted_items": len(state.get('extracted_items', []))
             })
@@ -490,26 +613,57 @@ async def summarize_node(state: AgentState) -> AgentState:
         ai_factory = get_ai_factory()
         llm = ai_factory.get_smart_llm(temperature=0)
         
-        # Prepare items for summarization
+        # Prepare items for summarization (reduce input size)
         items_text = "\n\n".join([
-            f"Title: {item['title']}\nURL: {item['url']}\nContent: {item['content'][:1000]}..."
+            f"Title: {item['title']}\nURL: {item['url']}\nContent: {item['content'][:500]}..."
             for item in state['extracted_items']
         ])
         
-        prompt = f"""Create a comprehensive summary based on the user's request.
+        user_request = state['prompt']
+        has_specific_request = len(user_request) > 20 and not user_request.lower().startswith("find")
+        
+        if has_specific_request:
+            prompt = f"""Create a concise summary that directly answers the user's specific request.
 
-USER REQUEST: {state['prompt']}
+USER REQUEST: {user_request}
 TOPIC: {state['goal']['topic']}
 TIME RANGE: {state['goal'].get('time_range_days', 'None')} days
 
 EXTRACTED ARTICLES ({len(state['extracted_items'])} items):
 {items_text}
 
-Create a well-structured summary that:
-1. Addresses the user's request directly
-2. Highlights key points from the articles
-3. Organizes information logically
-4. Includes relevant details and context
+TASK: Create a focused summary that:
+1. Directly addresses the user's request: "{user_request}"
+2. Synthesizes key information from the articles
+3. Provides a clear, concise answer
+4. Keeps the summary to 200-300 words
+
+IMPORTANT: 
+- Focus on answering the user's specific question/request
+- Be concise and direct
+- Organize information logically
+- Use markdown formatting (headings, bullets if helpful)
+
+Return the summary as markdown text (no JSON wrapper)."""
+        else:
+            prompt = f"""Create a concise medium-sized summary of the articles.
+
+TOPIC: {state['goal']['topic']}
+TIME RANGE: {state['goal'].get('time_range_days', 'None')} days
+
+EXTRACTED ARTICLES ({len(state['extracted_items'])} items):
+{items_text}
+
+TASK: Create a well-structured summary that:
+1. Highlights the main themes and key points from the articles
+2. Organizes information logically
+3. Provides a clear overview
+4. Keeps the summary to 200-300 words
+
+IMPORTANT:
+- Be concise and focused
+- Synthesize information across articles
+- Use markdown formatting (headings, bullets if helpful)
 
 Return the summary as markdown text (no JSON wrapper)."""
         

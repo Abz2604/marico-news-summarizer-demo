@@ -169,6 +169,7 @@ class AgentV2:
                 content=item_dict['content'],
                 publish_date=publish_date,
                 content_type=item_dict.get('content_type', 'article'),
+                summary=item_dict.get('summary'),  # Per-article summary
                 metadata=item_dict.get('metadata', {})
             ))
         

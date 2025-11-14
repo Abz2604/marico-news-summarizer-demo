@@ -36,6 +36,7 @@ class ExtractedContent:
     content: str
     publish_date: Optional[datetime] = None
     content_type: str = "article"  # article, forum_thread, etc.
+    summary: Optional[str] = None  # Per-article summary
     metadata: Optional[Dict[str, Any]] = None
 
 
