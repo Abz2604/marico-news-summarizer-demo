@@ -71,8 +71,9 @@ export default function MyBriefingsPage() {
       
       await apiClient.briefings.run(id)
       
-      // Refresh briefings list to update last_run_at
-      await loadBriefings()
+      // Refresh briefings list to update last_run_at (without showing full page loading)
+      const response = await apiClient.briefings.list()
+      setBriefings(response.items)
       
       toast({
         title: "Agent run complete!",

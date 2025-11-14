@@ -898,6 +898,7 @@ Return ONLY valid JSON (no markdown):
                 return []
             
             links_data = result.get('links', [])
+            logger.info(f"Stage 2 Batch {batch_idx + 1}: LLM returned {len(links_data)} links")
             
             # Convert to ExtractedLink objects and apply date filtering
             batch_extracted = []
@@ -909,17 +910,21 @@ Return ONLY valid JSON (no markdown):
                 # Normalize date (handles relative dates like "1 day ago", "2 days ago", etc.)
                 detected_date = normalize_date(detected_date_str)
                 
-                # Date filtering: Only include if normalized date is within range
+                # Date filtering: Only exclude if date exists AND is too old
+                # If no date, include it (let content extractor find date later)
                 if time_range_days and cutoff_date:
-                    if not detected_date:
-                        logger.debug(f"Stage 2: Excluding {url[:60]} - no date detected")
-                        continue
-                    if detected_date < cutoff_date:
-                        days_old = (datetime.now() - detected_date).days
-                        logger.debug(f"Stage 2: Excluding {url[:60]} - date {detected_date} is {days_old} days old (cutoff: {cutoff_date})")
-                        continue
-                    days_old = (datetime.now() - detected_date).days
-                    logger.debug(f"Stage 2: Including {url[:60]} - date {detected_date} is {days_old} days old (within {time_range_days} days)")
+                    if detected_date:
+                        # We have a date - check if it's within range
+                        if detected_date < cutoff_date:
+                            days_old = (datetime.now() - detected_date).days
+                            logger.warning(f"Stage 2: Excluding {url[:60]} - date {detected_date} is {days_old} days old (cutoff: {cutoff_date}, need < {time_range_days} days)")
+                            continue
+                        else:
+                            days_old = (datetime.now() - detected_date).days
+                            logger.info(f"Stage 2: ✅ Including {url[:60]} - date {detected_date} is {days_old} days old (within {time_range_days} days)")
+                    else:
+                        # No date detected - include it anyway (date might be on article page)
+                        logger.info(f"Stage 2: ⚠️ Including {url[:60]} - no date detected (will check on article page)")
                 
                 batch_extracted.append(ExtractedLink(
                     url=url,

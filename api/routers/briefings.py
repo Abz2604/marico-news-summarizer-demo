@@ -215,13 +215,14 @@ async def _run_agent_background(
     seed_links: List[str]
 ):
     """
-    Background task to run agent and save results.
+    Background task to run agent_v2 and save results.
     
     All logs from this function and the agent execution will include [run_id={run_id}]
     for easy correlation in server logs.
     """
     from services.db import connect
-    from agent.graph import run_agent
+    from agent_v2.agent_v2 import AgentV2
+    from agent_v2.types import AgentV2Request, PageType
     
     # Create a logger adapter with run_id context for all logs
     import logging
@@ -230,7 +231,7 @@ async def _run_agent_background(
         extra={"run_id": run_id, "briefing_id": briefing_id}
     )
     
-    run_logger.info(f"[run_id={run_id}] Starting background agent run for briefing {briefing_id}")
+    run_logger.info(f"[run_id={run_id}] Starting background agent_v2 run for briefing {briefing_id}")
     run_logger.debug(f"[run_id={run_id}] Prompt: {prompt[:100]}...")
     run_logger.debug(f"[run_id={run_id}] Seed links: {len(seed_links)} URLs")
     
@@ -238,30 +239,77 @@ async def _run_agent_background(
     try:
         # Create a connection for this background task
         with connect() as conn:
-            run_logger.info(f"[run_id={run_id}] Executing agent...")
+            run_logger.info(f"[run_id={run_id}] Executing agent_v2...")
             
-            # Execute the agent
-            result = await run_agent(
-                prompt=prompt,
-                seed_links=seed_links,
-                max_articles=10
-            )
-            
-            if not result:
-                agent_service.mark_run_as_failed(run_id, "Agent returned no result", conn=conn)
-                run_logger.error(f"[run_id={run_id}] Agent returned no result")
+            # Use the first seed link as the URL (agent_v2 works with single URL)
+            if not seed_links:
+                agent_service.mark_run_as_failed(run_id, "No seed links provided", conn=conn)
+                run_logger.error(f"[run_id={run_id}] No seed links provided")
                 return
             
-            run_logger.info(f"[run_id={run_id}] Agent completed successfully, saving summary...")
+            url = seed_links[0]
+            
+            # Create agent_v2 request
+            request = AgentV2Request(
+                url=url,
+                prompt=prompt,
+                page_type=PageType.BLOG_LISTING,  # Default to blog_listing for briefings
+                max_items=10,
+                time_range_days=None  # No time filter by default
+            )
+            
+            # Execute agent_v2
+            agent = AgentV2()
+            result = await agent.run(request)
+            
+            if not result or not result.items:
+                agent_service.mark_run_as_failed(run_id, "Agent_v2 returned no items", conn=conn)
+                run_logger.error(f"[run_id={run_id}] Agent_v2 returned no items")
+                return
+            
+            run_logger.info(f"[run_id={run_id}] Agent_v2 completed successfully, processing {len(result.items)} items...")
+            
+            # Convert agent_v2 response to summary format
+            # Build summary markdown from items
+            summary_parts = []
+            if result.summary:
+                summary_parts.append(result.summary)
+            else:
+                # Generate summary from items
+                summary_parts.append(f"## Summary\n\nFound {len(result.items)} relevant articles:\n\n")
+                for item in result.items:
+                    summary_parts.append(f"### {item.title}\n\n{item.summary or item.content[:200]}...\n\n")
+            
+            summary_markdown = "\n".join(summary_parts)
+            
+            # Extract bullet points from items
+            bullet_points = []
+            for item in result.items:
+                if item.summary:
+                    bullet_points.append(f"{item.title}: {item.summary[:150]}...")
+                else:
+                    bullet_points.append(f"{item.title}: {item.content[:150]}...")
+            
+            # Build citations from items
+            citations = [
+                {
+                    "url": item.url,
+                    "label": item.title,
+                    "publish_date": item.publish_date.isoformat() if item.publish_date else None
+                }
+                for item in result.items
+            ]
+            
+            run_logger.info(f"[run_id={run_id}] Saving summary with {len(bullet_points)} bullet points and {len(citations)} citations...")
             
             # Save the summary
             agent_service.save_summary_and_finalize_run(
                 run_id=run_id,
                 briefing_id=briefing_id,
-                summary_markdown=result.summary_markdown,
-                bullet_points=result.bullet_points,
-                citations=result.citations,
-                model=result.model,
+                summary_markdown=summary_markdown,
+                bullet_points=bullet_points,
+                citations=citations,
+                model="agent_v2",  # Mark as agent_v2
                 conn=conn
             )
             
@@ -269,12 +317,12 @@ async def _run_agent_background(
             briefings_service.update_briefing_last_run(briefing_id, conn=conn)
             
             run_logger.info(
-                f"[run_id={run_id}] ✅ Successfully completed agent run for briefing {briefing_id}. "
-                f"Summary saved with {len(result.bullet_points)} bullet points."
+                f"[run_id={run_id}] ✅ Successfully completed agent_v2 run for briefing {briefing_id}. "
+                f"Summary saved with {len(bullet_points)} bullet points."
             )
             
     except Exception as e:
-        run_logger.exception(f"[run_id={run_id}] ❌ Error in background agent run: {e}")
+        run_logger.exception(f"[run_id={run_id}] ❌ Error in background agent_v2 run: {e}")
         # Mark as failed - need connection for this
         try:
             with connect() as conn:
