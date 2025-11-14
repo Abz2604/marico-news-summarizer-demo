@@ -11,6 +11,7 @@ from typing import Literal, Optional, Callable
 from datetime import datetime, timedelta
 
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
 from .types import AgentState, ExtractedContent, ExtractedLink
 from .tools import fetch_page, extract_links, extract_content
 from .ai_factory import get_ai_factory
@@ -796,11 +797,14 @@ def create_agent_graph():
     # Final step
     workflow.add_edge("summarize", END)
     
-    # Compile graph
-    logger.info("Compiling graph...")
+    # Compile graph with checkpoint memory for state recovery
+    logger.info("Compiling graph with checkpoint memory...")
     try:
-        app = workflow.compile()
-        logger.info("Graph compiled successfully")
+        # Use MemorySaver to store state checkpoints
+        # This allows us to recover state if recursion limit is hit
+        memory = MemorySaver()
+        app = workflow.compile(checkpointer=memory)
+        logger.info("Graph compiled successfully with checkpoint memory")
     except Exception as e:
         logger.exception("Failed to compile graph!")
         raise
@@ -808,17 +812,20 @@ def create_agent_graph():
     return app
 
 
-# Global graph instance
+# Global graph instance and checkpointer
 _agent_graph = None
+_agent_checkpointer = None
 
 
 def get_agent_graph():
     """Get or create the agent graph instance"""
-    global _agent_graph
+    global _agent_graph, _agent_checkpointer
     if _agent_graph is None:
         logger.info("Creating agent graph for the first time...")
         try:
             _agent_graph = create_agent_graph()
+            # Store checkpointer reference for state recovery
+            _agent_checkpointer = _agent_graph.checkpointer
             logger.info("Agent graph created successfully")
         except Exception as e:
             logger.exception("Failed to create agent graph!")
@@ -826,4 +833,13 @@ def get_agent_graph():
     else:
         logger.debug("Using existing agent graph instance")
     return _agent_graph
+
+
+def get_agent_checkpointer():
+    """Get the checkpointer instance for state recovery"""
+    global _agent_checkpointer
+    if _agent_checkpointer is None:
+        # Ensure graph is created first
+        get_agent_graph()
+    return _agent_checkpointer
 

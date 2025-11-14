@@ -128,8 +128,20 @@ class AgentV2:
         logger.info(f"Initial state keys: {list(initial_state.keys())}")
         logger.info(f"Initial state goal: {initial_state.get('goal')}")
         
+        # Create config with thread_id for checkpoint tracking
+        import uuid
+        thread_id = str(uuid.uuid4())
+        config = {
+            "configurable": {
+                "thread_id": thread_id
+            },
+            "recursion_limit": 25  # Set explicit recursion limit
+        }
+        
         try:
-            final_state = await graph.ainvoke(initial_state)
+            # Invoke graph with checkpoint config
+            final_state = await graph.ainvoke(initial_state, config=config)
+            
             logger.info("=" * 80)
             logger.info("GRAPH EXECUTION COMPLETED")
             logger.info("=" * 80)
@@ -148,9 +160,104 @@ class AgentV2:
                 "error": final_state.get('error')
             })
         except Exception as e:
-            logger.exception("Graph invocation failed!")
-            self._emit("error", {"error": str(e), "stage": "graph_execution"})
-            raise
+            error_str = str(e)
+            error_type = type(e).__name__
+            
+            # Check if it's a recursion limit error
+            # Try to import GraphRecursionError for proper type checking
+            is_recursion_error = False
+            try:
+                from langgraph.errors import GraphRecursionError
+                is_recursion_error = isinstance(e, GraphRecursionError)
+            except ImportError:
+                # Fallback to string matching if import fails
+                is_recursion_error = "recursion limit" in error_str.lower() or "RecursionLimit" in error_type
+            
+            if is_recursion_error:
+                logger.warning(f"Recursion limit reached: {error_str}")
+                logger.info("Attempting to recover state from checkpoint...")
+                
+                # Get the checkpointer and retrieve last checkpoint
+                recovered_state = None
+                try:
+                    from agent_v2.graph import get_agent_checkpointer
+                    checkpointer = get_agent_checkpointer()
+                    
+                    if checkpointer:
+                        # List checkpoints for this thread (most recent first)
+                        checkpoint_list = list(checkpointer.list(config, limit=1))
+                        
+                        if checkpoint_list:
+                            # Get the most recent checkpoint
+                            checkpoint = checkpoint_list[0]
+                            # Retrieve the state from checkpoint
+                            checkpoint_data = checkpointer.get(config, checkpoint)
+                            
+                            if checkpoint_data:
+                                # State is stored in 'channel_values' or directly as the checkpoint
+                                if hasattr(checkpoint_data, 'channel_values'):
+                                    recovered_state = checkpoint_data.channel_values
+                                elif isinstance(checkpoint_data, dict) and 'channel_values' in checkpoint_data:
+                                    recovered_state = checkpoint_data['channel_values']
+                                elif isinstance(checkpoint_data, dict):
+                                    # Checkpoint data might be the state itself
+                                    recovered_state = checkpoint_data
+                                
+                                if recovered_state:
+                                    logger.info(f"✅ Recovered state from checkpoint: {len(recovered_state.get('extracted_items', []))} items")
+                                else:
+                                    logger.warning("Checkpoint found but state structure unexpected")
+                            else:
+                                logger.warning("Checkpoint found but no data returned")
+                        else:
+                            logger.warning("No checkpoints found for this thread")
+                    else:
+                        logger.warning("Graph has no checkpointer configured")
+                except Exception as checkpoint_error:
+                    logger.exception(f"Failed to retrieve checkpoint: {checkpoint_error}")
+                
+                # If checkpoint recovery failed, try to get state from the exception
+                if not recovered_state:
+                    # Fallback: check if exception has state info
+                    if hasattr(e, 'state') and e.state:
+                        recovered_state = e.state
+                        logger.info("Using state from exception")
+                    else:
+                        logger.warning("Could not recover state from checkpoint or exception")
+                
+                # If we have extracted items, summarize them
+                if recovered_state and len(recovered_state.get('extracted_items', [])) > 0:
+                    logger.info(f"Found {len(recovered_state['extracted_items'])} extracted items, generating summary...")
+                    self._emit("recursion_limit_reached", {
+                        "extracted_items": len(recovered_state['extracted_items']),
+                        "iterations": recovered_state.get('iteration', 0),
+                        "message": "Recursion limit reached, summarizing collected items"
+                    })
+                    
+                    # Run summarize node on the recovered state
+                    try:
+                        from agent_v2.graph import summarize_node
+                        recovered_state = await summarize_node(recovered_state)
+                        final_state = recovered_state
+                        logger.info("Successfully summarized recovered items")
+                    except Exception as summarize_error:
+                        logger.exception("Failed to summarize recovered items")
+                        # Continue with recovered_state even if summarization fails
+                        final_state = recovered_state
+                        final_state['error'] = f"Recursion limit reached. Summarization failed: {str(summarize_error)}"
+                else:
+                    # No items extracted, return error
+                    logger.warning("Recursion limit reached but no items were extracted")
+                    self._emit("error", {
+                        "error": "Recursion limit reached and no items were extracted",
+                        "stage": "graph_execution"
+                    })
+                    raise
+            else:
+                # Other errors - raise as before
+                logger.exception("Graph invocation failed!")
+                self._emit("error", {"error": str(e), "stage": "graph_execution"})
+                raise
         
         # Convert state to response
         items = []
