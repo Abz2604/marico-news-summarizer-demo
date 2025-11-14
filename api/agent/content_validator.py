@@ -8,8 +8,8 @@ import logging
 from dataclasses import dataclass
 from typing import Tuple
 
-from langchain_openai import ChatOpenAI
 from config import get_settings
+from .llm_factory import get_fast_llm
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +31,10 @@ class ContentQuality:
 class ContentValidator:
     """Validate article content quality using LLM"""
     
-    def __init__(self, openai_api_key: str):
-        settings = get_settings()
-        model_name = settings.content_validator_model or settings.openai_model or "gpt-4o-mini"
-        self.llm = ChatOpenAI(
-            model=model_name,
-            temperature=0,
-            api_key=openai_api_key
-        )
+    def __init__(self, openai_api_key: str = None):
+        # openai_api_key parameter kept for backward compatibility but ignored
+        # Use Azure OpenAI pipeline via llm_factory
+        self.llm = get_fast_llm(temperature=0)
     
     async def validate(self, text: str, url: str) -> ContentQuality:
         """
@@ -202,7 +198,6 @@ async def validate_content(text: str, url: str) -> ContentQuality:
     Returns:
         ContentQuality object with validation results
     """
-    settings = get_settings()
-    validator = ContentValidator(settings.openai_api_key)
+    validator = ContentValidator()  # No longer needs API key parameter
     return await validator.validate(text, url)
 

@@ -539,11 +539,112 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
               return matches ? matches.map((m) => m) : []
             }
 
+            // Extract per-article summaries from markdown
+            // V1 generates markdown with sections like "## Article [1]: [Title]"
+            const extractArticleSummaries = (markdown: string, bulletPoints: string[]): Map<string, string> => {
+              const summaryMap = new Map<string, string>()
+              
+              if (!markdown) {
+                // Fallback: extract from bullet points grouped by citation
+                const bulletMap = new Map<string, string[]>()
+                bulletPoints.forEach(bullet => {
+                  const citations = extractCitations(bullet)
+                  citations.forEach(label => {
+                    if (!bulletMap.has(label)) {
+                      bulletMap.set(label, [])
+                    }
+                    // Remove citation markers from bullet for cleaner summary
+                    const cleanBullet = bullet.replace(/\[\d+\]/g, '').trim()
+                    if (cleanBullet) {
+                      bulletMap.get(label)!.push(cleanBullet)
+                    }
+                  })
+                })
+                // Convert bullet arrays to summaries
+                bulletMap.forEach((bullets, label) => {
+                  if (bullets.length > 0) {
+                    summaryMap.set(label, bullets.join(' '))
+                  }
+                })
+                return summaryMap
+              }
+              
+              // Try to extract from article sections (## Article [n]:)
+              const articleSectionRegex = /##\s+Article\s+\[(\d+)\]:\s*([^\n]*)\n([\s\S]*?)(?=\n##\s+Article\s+\[|\n##\s+[^#]|\n\*\*Executive\s+Summary\*\*:|$)/g
+              let match
+              
+              while ((match = articleSectionRegex.exec(markdown)) !== null) {
+                const label = `[${match[1]}]`
+                const title = match[2].trim()
+                const content = match[3].trim()
+                
+                // Extract bullet points for this article and combine into summary
+                const bullets = content
+                  .split('\n')
+                  .filter(line => {
+                    const trimmed = line.trim()
+                    return trimmed.match(/^[-*•]\s+/) || trimmed.match(/^\d+[.)]\s+/)
+                  })
+                  .map(line => {
+                    // Remove bullet markers and citation markers
+                    return line
+                      .replace(/^[-*•]\s+/, '')
+                      .replace(/^\d+[.)]\s+/, '')
+                      .replace(/\[\d+\]/g, '')
+                      .trim()
+                  })
+                  .filter(line => line.length > 0)
+                
+                // Create summary from bullets (similar to v2's per-article summary)
+                if (bullets.length > 0) {
+                  const summary = bullets.join(' ')
+                  summaryMap.set(label, summary)
+                } else if (content.length > 0) {
+                  // Fallback: use first paragraph if no bullets
+                  const firstParagraph = content.split('\n\n')[0] || content.split('\n')[0]
+                  if (firstParagraph && firstParagraph.length > 20) {
+                    summaryMap.set(label, firstParagraph.trim())
+                  }
+                }
+              }
+              
+              // If no article sections found, fallback to bullet points grouped by citation
+              if (summaryMap.size === 0) {
+                const bulletMap = new Map<string, string[]>()
+                bulletPoints.forEach(bullet => {
+                  const citations = extractCitations(bullet)
+                  citations.forEach(label => {
+                    if (!bulletMap.has(label)) {
+                      bulletMap.set(label, [])
+                    }
+                    // Remove citation markers from bullet for cleaner summary
+                    const cleanBullet = bullet.replace(/\[\d+\]/g, '').trim()
+                    if (cleanBullet) {
+                      bulletMap.get(label)!.push(cleanBullet)
+                    }
+                  })
+                })
+                // Convert bullet arrays to summaries
+                bulletMap.forEach((bullets, label) => {
+                  if (bullets.length > 0) {
+                    summaryMap.set(label, bullets.join(' '))
+                  }
+                })
+              }
+              
+              return summaryMap
+            }
+
+            // Extract per-article summaries from markdown (with fallback to bullet points)
+            const articleSummaryMap = extractArticleSummaries(
+              result.summary_markdown || "",
+              result.bullet_points || []
+            )
+
             // Group bullets by citation
             const sourceMap = new Map<string, SourceWithBullets>()
             
-            // Initialize sources from citations
-            // Note: For V1, we don't have full content available, so fullContent will be undefined
+            // Initialize sources from citations with extracted summaries
             result.citations.forEach((citation) => {
               try {
                 const u = new URL(citation.url)
@@ -556,7 +657,7 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
                   age_days: citation.age_days,
                   bullets: [],
                   label: citation.label,
-                  summary: undefined, // V1 doesn't provide per-article summaries
+                  summary: articleSummaryMap.get(citation.label), // Extract from markdown
                 })
               } catch {
                 sourceMap.set(citation.label, {
@@ -567,7 +668,7 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
                   age_days: citation.age_days,
                   bullets: [],
                   label: citation.label,
-                  summary: undefined, // V1 doesn't provide per-article summaries
+                  summary: articleSummaryMap.get(citation.label), // Extract from markdown
                 })
               }
             })
@@ -699,6 +800,142 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
     }
   }
 
+  // Simple markdown formatter for v1 output (splits on bullet points at minimum)
+  const formatMarkdownForV1 = (markdown: string): string => {
+    if (!markdown) return ""
+    
+    // Check if this is a continuous string (no newlines or very few)
+    const hasNewlines = markdown.includes('\n')
+    const newlineCount = (markdown.match(/\n/g) || []).length
+    const isContinuousString = !hasNewlines || (newlineCount < 3 && markdown.length > 500)
+    
+    let processedMarkdown = markdown
+    
+    // First, ensure headers are on their own lines
+    processedMarkdown = processedMarkdown.replace(/([^\n])(##\s+)/g, '$1\n$2')
+    processedMarkdown = processedMarkdown.replace(/(##\s+[^\n]+)([^\n])/g, '$1\n$2')
+    
+    // CRITICAL: Split on bullet patterns that appear in continuous strings
+    // Pattern 1: " - **Title**:" (space-dash-space-bold-title-colon) - most common in v1 output
+    // This handles: "text. - **Title**: description - **Title2**: description"
+    // Use global flag to replace ALL occurrences
+    processedMarkdown = processedMarkdown.replace(/([^\n])\s+-\s+\*\*([^*]+)\*\*:/g, '$1\n- **$2**:')
+    
+    // Pattern 1b: Handle case where it's just "- **Title**:" (no leading space before dash)
+    // This handles bullets that appear mid-string (after some text)
+    processedMarkdown = processedMarkdown.replace(/([^\n])-\s+\*\*([^*]+)\*\*:/g, (match, p1, p2) => {
+      // Only split if p1 is not already a dash or newline, and has content
+      if (p1 !== '-' && p1 !== '\n' && p1.trim() !== '') {
+        return `${p1}\n- **${p2}**:`
+      }
+      return match
+    })
+    
+    // Pattern 1c: Handle case where string STARTS with "- **Title**:"
+    // This ensures the first bullet is properly formatted
+    if (processedMarkdown.trim().startsWith('- **') && !processedMarkdown.trim().startsWith('- **\n')) {
+      // Already starts correctly, but ensure it's on its own line if there's text before it
+      processedMarkdown = processedMarkdown.replace(/^([^\n-]*?)(-\s+\*\*[^*]+\*\*:)/, '$1\n$2')
+    }
+    
+    // Pattern 2: " - " followed by bold text (space-dash-space-bold) - fallback for bold without colon
+    processedMarkdown = processedMarkdown.replace(/([^\n])\s+-\s+\*\*/g, '$1\n- **')
+    
+    // Pattern 3: If still continuous, try splitting on any " - " that's followed by capital letter or bold
+    if (isContinuousString && processedMarkdown.split('\n').length < 3) {
+      // Split on " - " followed by capital letter (likely a new bullet point)
+      processedMarkdown = processedMarkdown.replace(/([.!?])\s+-\s+([A-Z])/g, '$1\n- $2')
+      // Split on " - " followed by ** (bold)
+      processedMarkdown = processedMarkdown.replace(/([^\n])\s+-\s+\*\*/g, '$1\n- **')
+    }
+    
+    // Pattern 3: Standard bullet points (-, *, •) at start of line or after text
+    processedMarkdown = processedMarkdown.replace(/([^\n])(\s*[-*•]\s+)/g, '$1\n$2')
+    
+    // Pattern 4: Numbered lists
+    processedMarkdown = processedMarkdown.replace(/([^\n])(\s+\d+[.)]\s+)/g, '$1\n$2')
+    
+    // Pattern 5: Generic " - " pattern (but be more careful - only if it looks like a list item)
+    // Look for patterns like "text. - " or "text - **" which indicate new bullet points
+    processedMarkdown = processedMarkdown.replace(/([.!?])\s+-\s+/g, '$1\n- ')
+    processedMarkdown = processedMarkdown.replace(/([^\n])\s+-\s+\*\*/g, '$1\n- **')
+    
+    // Split by lines and process
+    const lines = processedMarkdown.split('\n')
+    const formatted: string[] = []
+    
+    lines.forEach((line, index) => {
+      const trimmed = line.trim()
+      
+      // Empty line - preserve it but don't add multiple consecutive empty lines
+      if (!trimmed) {
+        if (formatted.length === 0 || formatted[formatted.length - 1] !== '') {
+          formatted.push('')
+        }
+        return
+      }
+      
+      // Header lines (## or ###) - add spacing before
+      if (trimmed.startsWith('##') || trimmed.startsWith('###')) {
+        if (index > 0 && formatted.length > 0 && formatted[formatted.length - 1] !== '') {
+          formatted.push('')
+        }
+        formatted.push(line)
+        return
+      }
+      
+      // Bullet points (-, *, •, or numbered) - ensure they're on their own line
+      if (/^[-*•]\s+/.test(trimmed) || /^\d+[.)]\s+/.test(trimmed)) {
+        formatted.push(line)
+        return
+      }
+      
+      // Check if line contains multiple bullet patterns that weren't split
+      // Look for " - **" patterns within a single line
+      if (trimmed.includes(' - **')) {
+        const bulletMatches = trimmed.match(/\s-\s\*\*[^*]+\*\*:/g)
+        if (bulletMatches && bulletMatches.length > 1) {
+          // Split on each " - **" pattern
+          const parts = trimmed.split(/(?=\s-\s\*\*)/g)
+          parts.forEach((part, partIndex) => {
+            if (partIndex > 0) {
+              formatted.push('')
+            }
+            formatted.push(part.trim())
+          })
+          return
+        }
+      }
+      
+      // Regular text - check if it contains multiple " - " patterns in one line
+      if (trimmed.includes(' - ') && !trimmed.startsWith('-')) {
+        // Count how many " - " patterns exist
+        const dashMatches = trimmed.match(/\s-\s/g)
+        if (dashMatches && dashMatches.length > 1) {
+          // Split on " - " but preserve the dash
+          const parts = trimmed.split(/(?=\s-\s)/g)
+          parts.forEach((part, partIndex) => {
+            if (partIndex > 0) {
+              formatted.push('')
+            }
+            formatted.push(part.trim())
+          })
+          return
+        }
+      }
+      
+      // Otherwise, preserve the line as-is
+      formatted.push(line)
+    })
+    
+    // Join with newlines and clean up excessive empty lines
+    let result = formatted.join('\n')
+    // Remove more than 2 consecutive newlines
+    result = result.replace(/\n{3,}/g, '\n\n')
+    
+    return result.trim()
+  }
+
   // Collapsible Log Component
   const CollapsibleLog = ({ title, steps }: { title: string; steps: TimelineStep[] }) => {
     const [isOpen, setIsOpen] = useState(false)
@@ -787,7 +1024,7 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
           <div className="space-y-2">
             <div className="p-4 bg-muted/30 rounded-lg border border-border">
               <div className="prose prose-sm max-w-none dark:prose-invert">
-                <div className="text-sm whitespace-pre-wrap leading-relaxed">{summaryMd}</div>
+                <div className="text-sm whitespace-pre-wrap leading-relaxed">{formatMarkdownForV1(summaryMd)}</div>
               </div>
             </div>
           </div>
@@ -853,7 +1090,7 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
           <div className="space-y-2">
             <div className="p-4 bg-muted/30 rounded-lg border border-border">
               <div className="prose prose-sm max-w-none dark:prose-invert">
-                <div className="text-sm whitespace-pre-wrap leading-relaxed">{summaryMd}</div>
+                <div className="text-sm whitespace-pre-wrap leading-relaxed">{formatMarkdownForV1(summaryMd)}</div>
               </div>
             </div>
           </div>

@@ -10,8 +10,8 @@ from datetime import datetime, timedelta
 from typing import Optional, Tuple
 from bs4 import BeautifulSoup
 
-from langchain_openai import ChatOpenAI
 from config import get_settings
+from .llm_factory import get_fast_llm
 
 logger = logging.getLogger(__name__)
 
@@ -19,14 +19,10 @@ logger = logging.getLogger(__name__)
 class DateParser:
     """Extract publish dates from article HTML using multiple strategies"""
     
-    def __init__(self, openai_api_key: str):
-        settings = get_settings()
-        model_name = settings.date_parser_model or settings.openai_model or "gpt-4o-mini"
-        self.llm = ChatOpenAI(
-            model=model_name,
-            temperature=0,
-            api_key=openai_api_key
-        )
+    def __init__(self, openai_api_key: str = None):
+        # openai_api_key parameter kept for backward compatibility but ignored
+        # Use Azure OpenAI pipeline via llm_factory
+        self.llm = get_fast_llm(temperature=0)
     
     async def extract_date(self, html: str, url: str) -> Tuple[Optional[datetime], float, str]:
         """
@@ -309,7 +305,6 @@ async def extract_article_date(html: str, url: str) -> Tuple[Optional[datetime],
     Returns:
         (datetime | None, confidence: 0-1, method: str)
     """
-    settings = get_settings()
-    parser = DateParser(settings.openai_api_key)
+    parser = DateParser()  # No longer needs API key parameter
     return await parser.extract_date(html, url)
 

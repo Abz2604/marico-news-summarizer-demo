@@ -12,9 +12,8 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 
 from bs4 import BeautifulSoup
-from langchain_openai import ChatOpenAI
-
 from config import get_settings
+from .llm_factory import get_fast_llm
 
 logger = logging.getLogger(__name__)
 
@@ -274,12 +273,8 @@ Respond with ONLY a JSON array:
 """
     
     try:
-        model_name = settings.link_extractor_model or settings.openai_model or "gpt-4o-mini"
-        llm = ChatOpenAI(
-            model=model_name,
-            temperature=0,
-            api_key=settings.openai_api_key
-        )
+        # Use Azure OpenAI pipeline via llm_factory
+        llm = get_fast_llm(temperature=0)
         
         response = await llm.ainvoke(prompt)
         response_text = response.content.strip()
