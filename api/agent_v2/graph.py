@@ -7,6 +7,7 @@ Uses LLM intelligence for decision-making.
 
 import logging
 import json
+import asyncio
 from typing import Literal, Optional, Callable
 from datetime import datetime, timedelta
 
@@ -470,10 +471,12 @@ async def check_goal_node(state: AgentState) -> AgentState:
         logger.warning("[Node: check_goal] Abort: Too many failures")
         return state
     
-    if state['iteration'] >= 20:
+    # Check recursion limit before it's hit (25 is the limit, abort at 23 to be safe)
+    # This prevents hitting GraphRecursionError and allows graceful exit
+    if state['iteration'] >= 23:
         state['should_abort'] = True
-        state['error'] = "Max iterations reached"
-        logger.warning("[Node: check_goal] Abort: Max iterations")
+        state['error'] = "Approaching recursion limit, summarizing collected items"
+        logger.warning(f"[Node: check_goal] Abort: Approaching recursion limit (iteration {state['iteration']}/25)")
         return state
     
     if state['no_progress_iterations'] >= 10:
@@ -484,6 +487,7 @@ async def check_goal_node(state: AgentState) -> AgentState:
     
     # Use LLM to evaluate goal
     try:
+        logger.info(f"[Node: check_goal] Calling LLM to evaluate goal (iteration {state['iteration']})...")
         ai_factory = get_ai_factory()
         llm = ai_factory.get_smart_llm(temperature=0)
         
@@ -522,7 +526,10 @@ Return ONLY JSON (no markdown):
   "items_needed": number of additional items needed (if continue)
 }}"""
         
-        response = await llm.ainvoke(prompt)
+        logger.info(f"[Node: check_goal] LLM prompt length: {len(prompt)} chars, invoking LLM...")
+        # Add timeout to prevent hanging (30 seconds should be enough)
+        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=30.0)
+        logger.info(f"[Node: check_goal] LLM response received: {len(response.content) if response.content else 0} chars")
         response_text = response.content.strip()
         
         # Handle markdown
@@ -531,7 +538,9 @@ Return ONLY JSON (no markdown):
             json_lines = [l for l in lines if not l.startswith("```")]
             response_text = "\n".join(json_lines)
         
+        logger.info(f"[Node: check_goal] Parsing LLM response...")
         result = json.loads(response_text)
+        logger.info(f"[Node: check_goal] LLM decision: {result.get('decision')}, quality: {result.get('quality_score')}")
         
         decision = result.get('decision', 'continue')
         state['quality_score'] = float(result.get('quality_score', 0.5))
@@ -577,8 +586,8 @@ Return ONLY JSON (no markdown):
             
             logger.info(f"[Node: check_goal] Continue: {result.get('reasoning', '')}")
     
-    except Exception as e:
-        logger.exception("[Node: check_goal] LLM evaluation failed")
+    except asyncio.TimeoutError:
+        logger.error(f"[Node: check_goal] LLM call timed out after 30 seconds (iteration {state['iteration']})")
         # Fallback to simple rule-based check
         if len(state['extracted_items']) >= state['goal']['target_items']:
             decision = 'done'
@@ -587,11 +596,33 @@ Return ONLY JSON (no markdown):
         else:
             decision = 'continue'
         
+        state['quality_score'] = 0.5
         state['history'].append({
             'action': 'check_goal',
             'decision': decision,
-            'error': 'LLM evaluation failed, using fallback'
+            'reasoning': 'LLM timeout - using fallback',
+            'quality_score': state['quality_score']
         })
+        logger.info(f"[Node: check_goal] Fallback decision: {decision}")
+    except Exception as e:
+        logger.exception(f"[Node: check_goal] LLM evaluation failed (iteration {state['iteration']}): {e}")
+        logger.error(f"[Node: check_goal] Error type: {type(e).__name__}, Error message: {str(e)}")
+        # Fallback to simple rule-based check
+        if len(state['extracted_items']) >= state['goal']['target_items']:
+            decision = 'done'
+        elif state['current_link_index'] >= len(state['links_found']):
+            decision = 'abort'
+        else:
+            decision = 'continue'
+        
+        state['quality_score'] = 0.5
+        state['history'].append({
+            'action': 'check_goal',
+            'decision': decision,
+            'reasoning': f'LLM error: {str(e)[:100]}',
+            'quality_score': state['quality_score']
+        })
+        logger.info(f"[Node: check_goal] Fallback decision: {decision}")
     
     return state
 

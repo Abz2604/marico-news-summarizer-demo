@@ -138,9 +138,28 @@ class AgentV2:
             "recursion_limit": 25  # Set explicit recursion limit
         }
         
+        # Use astream to track state incrementally (more reliable than checkpoint API)
+        # This ensures we always have the latest state even if recursion limit is hit
+        final_state = None
+        last_state = initial_state.copy()
+        
         try:
-            # Invoke graph with checkpoint config
-            final_state = await graph.ainvoke(initial_state, config=config)
+            # Stream state updates to track progress
+            # astream yields: {node_name: full_state_dict} after each node execution
+            async for state_update in graph.astream(initial_state, config=config):
+                # state_update is a dict: {node_name: full_state_dict}
+                # The state_dict contains the complete state after that node
+                for node_name, node_state in state_update.items():
+                    if isinstance(node_state, dict):
+                        # This is the full state, not just updates - use it directly
+                        last_state = node_state.copy()
+                        final_state = last_state.copy()
+                        extracted_count = node_state.get('extracted_items', [])
+                        logger.debug(f"State update from {node_name}: {len(extracted_count)} items, iteration {node_state.get('iteration', 0)}")
+            
+            # If we got here without exception, use the final state
+            if final_state is None:
+                final_state = last_state
             
             logger.info("=" * 80)
             logger.info("GRAPH EXECUTION COMPLETED")
@@ -177,53 +196,43 @@ class AgentV2:
                 logger.warning(f"Recursion limit reached: {error_str}")
                 logger.info("Attempting to recover state from checkpoint...")
                 
-                # Get the checkpointer and retrieve last checkpoint
-                recovered_state = None
-                try:
-                    from agent_v2.graph import get_agent_checkpointer
-                    checkpointer = get_agent_checkpointer()
-                    
-                    if checkpointer:
-                        # List checkpoints for this thread (most recent first)
-                        checkpoint_list = list(checkpointer.list(config, limit=1))
-                        
-                        if checkpoint_list:
-                            # Get the most recent checkpoint
-                            checkpoint = checkpoint_list[0]
-                            # Retrieve the state from checkpoint
-                            checkpoint_data = checkpointer.get(config, checkpoint)
-                            
-                            if checkpoint_data:
-                                # State is stored in 'channel_values' or directly as the checkpoint
-                                if hasattr(checkpoint_data, 'channel_values'):
-                                    recovered_state = checkpoint_data.channel_values
-                                elif isinstance(checkpoint_data, dict) and 'channel_values' in checkpoint_data:
-                                    recovered_state = checkpoint_data['channel_values']
-                                elif isinstance(checkpoint_data, dict):
-                                    # Checkpoint data might be the state itself
-                                    recovered_state = checkpoint_data
-                                
-                                if recovered_state:
-                                    logger.info(f"✅ Recovered state from checkpoint: {len(recovered_state.get('extracted_items', []))} items")
-                                else:
-                                    logger.warning("Checkpoint found but state structure unexpected")
-                            else:
-                                logger.warning("Checkpoint found but no data returned")
-                        else:
-                            logger.warning("No checkpoints found for this thread")
-                    else:
-                        logger.warning("Graph has no checkpointer configured")
-                except Exception as checkpoint_error:
-                    logger.exception(f"Failed to retrieve checkpoint: {checkpoint_error}")
+                # Use the last state we captured from streaming (most reliable)
+                # This is better than checkpoint API which has issues
+                recovered_state = final_state if final_state else last_state
                 
-                # If checkpoint recovery failed, try to get state from the exception
-                if not recovered_state:
-                    # Fallback: check if exception has state info
-                    if hasattr(e, 'state') and e.state:
-                        recovered_state = e.state
-                        logger.info("Using state from exception")
-                    else:
-                        logger.warning("Could not recover state from checkpoint or exception")
+                if recovered_state:
+                    logger.info(f"✅ Recovered state from streaming: {len(recovered_state.get('extracted_items', []))} items, {recovered_state.get('iteration', 0)} iterations")
+                else:
+                    logger.warning("Could not recover state from streaming")
+                    
+                    # Fallback: Try checkpoint API (may fail but worth trying)
+                    try:
+                        from agent_v2.graph import get_agent_checkpointer
+                        checkpointer = get_agent_checkpointer()
+                        if checkpointer:
+                            # Try to get the last checkpoint (API might be different)
+                            # Some versions use get(config) instead of get(config, checkpoint)
+                            try:
+                                checkpoint_list = list(checkpointer.list(config, limit=1))
+                                if checkpoint_list:
+                                    checkpoint = checkpoint_list[0]
+                                    # Try different API signatures
+                                    try:
+                                        checkpoint_data = checkpointer.get(config, checkpoint)
+                                    except TypeError:
+                                        # Try without checkpoint parameter
+                                        checkpoint_data = checkpointer.get(config)
+                                    
+                                    if checkpoint_data:
+                                        if hasattr(checkpoint_data, 'channel_values'):
+                                            recovered_state = checkpoint_data.channel_values
+                                        elif isinstance(checkpoint_data, dict):
+                                            recovered_state = checkpoint_data.get('channel_values', checkpoint_data)
+                                        logger.info(f"✅ Recovered state from checkpoint: {len(recovered_state.get('extracted_items', []))} items")
+                            except Exception as checkpoint_api_error:
+                                logger.debug(f"Checkpoint API error (expected): {checkpoint_api_error}")
+                    except Exception as checkpoint_error:
+                        logger.debug(f"Checkpoint retrieval failed (using streaming state): {checkpoint_error}")
                 
                 # If we have extracted items, summarize them
                 if recovered_state and len(recovered_state.get('extracted_items', [])) > 0:

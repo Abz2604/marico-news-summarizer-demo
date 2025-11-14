@@ -363,6 +363,15 @@ export function DemoSummary({ briefingData }: DemoSummaryProps) {
             eventSource.close()
             break
 
+          case "recursion_limit_reached":
+            // Handle recursion limit gracefully - summarize what we have
+            console.warn("Recursion limit reached, summarizing collected items:", data)
+            addTimelineStep("Recursion Limit Reached", "active", `Summarizing ${data.extracted_items} collected items...`)
+            setCurrentStep("summarizing")
+            setProgress(90)
+            // Don't close eventSource - wait for complete event with summarized results
+            break
+
           case "error":
             console.error("Agent V2 error:", data.error)
             setCurrentStep("error")

@@ -573,7 +573,7 @@ async def _stage1_find_all_articles(links: List[dict]) -> List[dict]:
         # Log sample context to check if dates are present
         if batch_idx == 0 and batch:
             logger.info(f"Stage 1: Sample context from first batch (checking for dates):")
-            for i, link in enumerate(batch[:5]):  # First 5 links for better sampling
+            for i, link in enumerate(batch[:2]):  # First 5 links for better sampling
                 context = link.get('context', '')
                 logger.info(f"  Link {i+1}: {link.get('text', '')[:60]}")
                 logger.info(f"    URL: {link.get('url', '')[:80]}")
@@ -921,10 +921,10 @@ Return ONLY valid JSON (no markdown):
                             continue
                         else:
                             days_old = (datetime.now() - detected_date).days
-                            logger.info(f"Stage 2: ✅ Including {url[:60]} - date {detected_date} is {days_old} days old (within {time_range_days} days)")
-                    else:
-                        # No date detected - include it anyway (date might be on article page)
-                        logger.info(f"Stage 2: ⚠️ Including {url[:60]} - no date detected (will check on article page)")
+                            # logger.info(f"Stage 2: ✅ Including {url[:60]} - date {detected_date} is {days_old} days old (within {time_range_days} days)")
+                    # else:
+                    #     # No date detected - include it anyway (date might be on article page)
+                    #     logger.info(f"Stage 2: ⚠️ Including {url[:60]} - no date detected (will check on article page)")
                 
                 batch_extracted.append(ExtractedLink(
                     url=url,
