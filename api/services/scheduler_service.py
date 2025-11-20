@@ -61,7 +61,7 @@ def parse_schedule_to_cron(schedule_description: str) -> List[str]:
         return [schedule]
     
     cron_expressions = []
-
+    
     # Split by " & " to handle multiple schedules combined
     schedule_parts = [s.strip() for s in schedule.split(" & ")]
     
@@ -81,9 +81,9 @@ def parse_schedule_to_cron(schedule_description: str) -> List[str]:
             times = [t.strip() for t in time_part.split(",")]
             
             for time_str in times:
-                hour, minute = time_str.split(":")
-                hour = int(hour)
-                minute = int(minute)
+            hour, minute = time_str.split(":")
+            hour = int(hour)
+            minute = int(minute)
                 
                 if "daily" in schedule_base:
                     cron_expressions.append(f"{minute} {hour} * * *")
@@ -94,17 +94,17 @@ def parse_schedule_to_cron(schedule_description: str) -> List[str]:
                 elif "weekly on" in schedule_base:
                     # "Weekly on Mon, Wed"
                     days_part = schedule_base.replace("weekly on", "").strip()
-                    
-                    day_map = {
-                        "monday": "0", "mon": "0",
-                        "tuesday": "1", "tue": "1",
-                        "wednesday": "2", "wed": "2",
-                        "thursday": "3", "thu": "3",
-                        "friday": "4", "fri": "4",
-                        "saturday": "5", "sat": "5",
-                        "sunday": "6", "sun": "6"
-                    }
-                    
+            
+            day_map = {
+                "monday": "0", "mon": "0",
+                "tuesday": "1", "tue": "1",
+                "wednesday": "2", "wed": "2",
+                "thursday": "3", "thu": "3",
+                "friday": "4", "fri": "4",
+                "saturday": "5", "sat": "5",
+                "sunday": "6", "sun": "6"
+            }
+            
                     selected_days = []
                     # Handle comma separated days
                     raw_days = [d.strip() for d in days_part.split(",")]
@@ -118,11 +118,11 @@ def parse_schedule_to_cron(schedule_description: str) -> List[str]:
                     if selected_days:
                         # Map back to APScheduler/cron format (names: mon,tue,wed,thu,fri,sat,sun)
                         num_to_name = {
-                            "0": "mon", "1": "tue", "2": "wed", "3": "thu", "4": "fri", "5": "sat", "6": "sun"
-                        }
+                    "0": "mon", "1": "tue", "2": "wed", "3": "thu", "4": "fri", "5": "sat", "6": "sun"
+                }
                         cron_days = ",".join([num_to_name[d] for d in selected_days])
                         cron_expressions.append(f"{minute} {hour} * * {cron_days}")
-                    else:
+            else:
                          logger.warning(f"Could not parse days from: {days_part}")
 
                 elif "monthly on day" in schedule_base:
@@ -134,16 +134,16 @@ def parse_schedule_to_cron(schedule_description: str) -> List[str]:
 
                 elif any(day in schedule_base for day in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]):
                     # "Monday" (Single day fallback)
-                    day_map = {
+        day_map = {
                         "monday": "mon", "tuesday": "tue", "wednesday": "wed", "thursday": "thu",
                         "friday": "fri", "saturday": "sat", "sunday": "sun"
-                    }
+        }
                     found = False
                     for name, code in day_map.items():
                         if name in schedule_base:
                              cron_expressions.append(f"{minute} {hour} * * {code}")
                              found = True
-                             break
+                break
                     if not found:
                          logger.warning(f"Could not parse specific day schedule: {schedule_base}")
                 
@@ -152,7 +152,7 @@ def parse_schedule_to_cron(schedule_description: str) -> List[str]:
 
         except Exception as e:
             logger.warning(f"Failed to parse schedule part '{part}': {e}")
-
+    
     return cron_expressions
 
 
