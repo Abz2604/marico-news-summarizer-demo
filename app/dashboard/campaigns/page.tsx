@@ -196,7 +196,7 @@ export default function CampaignsPage() {
   }
 
   const editCampaign = (campaignId: string) => {
-    router.push(`/dashboard/campaigns/${campaignId}/edit`)
+    router.push(`/dashboard/campaigns/${campaignId}`)
   }
 
   const deleteCampaign = async (campaign: Campaign) => {

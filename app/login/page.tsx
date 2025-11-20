@@ -53,7 +53,7 @@ export default function LoginPage() {
               <span className="text-primary-foreground font-bold text-xl">📰</span>
             </div>
           </div>
-          <CardTitle className="text-2xl">Daily News Summarizer</CardTitle>
+          <CardTitle className="text-2xl">Marico Content Agent</CardTitle>
           <CardDescription>{isSignup ? "Create your account" : "Sign in to your account"}</CardDescription>
         </CardHeader>
         <CardContent>

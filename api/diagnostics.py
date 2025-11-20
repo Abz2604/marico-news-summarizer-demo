@@ -250,7 +250,7 @@ async def test_agent_modules() -> Dict[str, Any]:
 async def main():
     """Run all diagnostics"""
     print("\n" + "🔍 " + "="*66)
-    print("  MARICO NEWS SUMMARIZER - SYSTEM DIAGNOSTICS")
+    print("  MARICO CONTENT AGENT - SYSTEM DIAGNOSTICS")
     print("  " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     print("="*70)
     

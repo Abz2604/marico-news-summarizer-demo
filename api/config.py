@@ -16,7 +16,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = Field(default="Marico News Summarizer API")
+    app_name: str = Field(default="Marico Content Agent API")
     env: str = Field(default="development")
     debug: bool = Field(default=False)
 

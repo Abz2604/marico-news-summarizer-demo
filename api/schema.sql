@@ -1,4 +1,4 @@
--- Snowflake schema for Marico News Summarizer (MVP)
+-- Snowflake schema for Marico Content Agent (MVP)
 -- Table name prefix: AI_NW_SUMM_
 
 -- Note: Adjust DATABASE and SCHEMA context before running, e.g.:

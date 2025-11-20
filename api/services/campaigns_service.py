@@ -12,7 +12,7 @@ from services.db import fetch_dicts, execute
 
 class Campaign(BaseModel):
     id: str
-    user_id: str
+    user_id: str | None
     name: str
     status: str
     description: str | None

@@ -2,7 +2,7 @@
 
 ## ✅ Phase 1: COMPLETED
 
-The Marico News Summarizer now uses **Azure OpenAI exclusively** for all LLM operations.
+The Marico Content Agent now uses **Azure OpenAI exclusively** for all LLM operations.
 
 ---
 

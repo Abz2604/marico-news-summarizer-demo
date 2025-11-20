@@ -41,7 +41,11 @@ def parse_schedule_to_cron(schedule_description: str) -> List[str]:
     
     Supported formats:
     - "Daily at 09:00, 17:00" → ["0 9 * * *", "0 17 * * *"]
-    - "Weekdays 09:00" → ["0 9 * * 1-5"]
+    - "Weekdays at 09:00" → ["0 9 * * 1-5"]
+    - "Weekly on Monday at 09:00" → ["0 9 * * 1"]
+    - "Weekly on Mon, Wed at 09:00" → ["0 9 * * 1,3"]
+    - "Monthly on day 1 at 09:00" → ["0 9 1 * *"]
+    - "Monthly on the first Monday at 09:00" (Complex, might need specialized handling or limitation) -> For MVP, sticking to specific days of month.
     - "0 9 * * *" → ["0 9 * * *"] (already cron format)
     
     Returns list of cron expressions (one per time).
@@ -56,64 +60,98 @@ def parse_schedule_to_cron(schedule_description: str) -> List[str]:
         return [schedule]
     
     cron_expressions = []
+
+    # Split by " & " to handle multiple schedules combined
+    schedule_parts = [s.strip() for s in schedule.split(" & ")]
     
-    # Parse "Daily at 09:00, 17:00" format
-    if "daily" in schedule.lower() or "at" in schedule.lower():
-        # Extract times
-        times = []
-        if "at" in schedule.lower():
-            # "Daily at 09:00, 17:00"
-            time_part = schedule.lower().split("at")[-1].strip()
+    for part in schedule_parts:
+        try:
+            # Extract time part first (always at the end or after "at")
+            if " at " in part.lower():
+                time_part = part.lower().split(" at ")[-1].strip()
+                schedule_base = part.lower().split(" at ")[0].strip()
+            else:
+                # Assume the last part is time if no "at" (e.g. "Daily 09:00")
+                parts = part.split()
+                time_part = parts[-1]
+                schedule_base = " ".join(parts[:-1]).lower()
+
+            # Handle multiple times "09:00, 17:00"
             times = [t.strip() for t in time_part.split(",")]
-        else:
-            # "Daily 09:00"
-            parts = schedule.lower().replace("daily", "").strip().split(",")
-            times = [t.strip() for t in parts]
-        
-        for time_str in times:
-            try:
+            
+            for time_str in times:
                 hour, minute = time_str.split(":")
                 hour = int(hour)
                 minute = int(minute)
-                cron_expressions.append(f"{minute} {hour} * * *")
-            except ValueError:
-                logger.warning(f"Could not parse time: {time_str}")
-    
-    # Parse "Weekdays 09:00" format
-    elif "weekday" in schedule.lower():
-        time_part = schedule.lower().replace("weekdays", "").replace("weekday", "").strip()
-        try:
-            hour, minute = time_part.split(":")
-            hour = int(hour)
-            minute = int(minute)
-            cron_expressions.append(f"{minute} {hour} * * 1-5")  # Mon-Fri
-        except ValueError:
-            logger.warning(f"Could not parse weekday time: {time_part}")
-    
-    # Parse "Monday 09:00" format (single day)
-    elif any(day in schedule.lower() for day in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]):
-        day_map = {
-            "monday": "1", "tuesday": "2", "wednesday": "3", "thursday": "4",
-            "friday": "5", "saturday": "6", "sunday": "0"
-        }
-        day_name = None
-        for d, num in day_map.items():
-            if d in schedule.lower():
-                day_name = num
-                break
-        
-        time_part = schedule.lower()
-        for d in day_map.keys():
-            time_part = time_part.replace(d, "").strip()
-        
-        try:
-            hour, minute = time_part.split(":")
-            hour = int(hour)
-            minute = int(minute)
-            cron_expressions.append(f"{minute} {hour} * * {day_name}")
-        except ValueError:
-            logger.warning(f"Could not parse day-specific time: {time_part}")
-    
+                
+                if "daily" in schedule_base:
+                    cron_expressions.append(f"{minute} {hour} * * *")
+                    
+                elif "weekday" in schedule_base: # "Weekdays" or "Weekday"
+                    cron_expressions.append(f"{minute} {hour} * * 1-5")
+                    
+                elif "weekly on" in schedule_base:
+                    # "Weekly on Mon, Wed"
+                    days_part = schedule_base.replace("weekly on", "").strip()
+                    
+                    day_map = {
+                        "monday": "0", "mon": "0",
+                        "tuesday": "1", "tue": "1",
+                        "wednesday": "2", "wed": "2",
+                        "thursday": "3", "thu": "3",
+                        "friday": "4", "fri": "4",
+                        "saturday": "5", "sat": "5",
+                        "sunday": "6", "sun": "6"
+                    }
+                    
+                    selected_days = []
+                    # Handle comma separated days
+                    raw_days = [d.strip() for d in days_part.split(",")]
+                    for d in raw_days:
+                        for name, val in day_map.items():
+                            if name == d or name in d: # Simple match
+                                 if val not in selected_days:
+                                    selected_days.append(val)
+                                    break # Matched this raw day
+                    
+                    if selected_days:
+                        # Map back to APScheduler/cron format (names: mon,tue,wed,thu,fri,sat,sun)
+                        num_to_name = {
+                            "0": "mon", "1": "tue", "2": "wed", "3": "thu", "4": "fri", "5": "sat", "6": "sun"
+                        }
+                        cron_days = ",".join([num_to_name[d] for d in selected_days])
+                        cron_expressions.append(f"{minute} {hour} * * {cron_days}")
+                    else:
+                         logger.warning(f"Could not parse days from: {days_part}")
+
+                elif "monthly on day" in schedule_base:
+                     # "Monthly on day 1" or "Monthly on day 1, 15"
+                     days_part = schedule_base.replace("monthly on day", "").strip()
+                     doms = [d.strip() for d in days_part.split(",")]
+                     dom_str = ",".join(doms)
+                     cron_expressions.append(f"{minute} {hour} {dom_str} * *")
+
+                elif any(day in schedule_base for day in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]):
+                    # "Monday" (Single day fallback)
+                    day_map = {
+                        "monday": "mon", "tuesday": "tue", "wednesday": "wed", "thursday": "thu",
+                        "friday": "fri", "saturday": "sat", "sunday": "sun"
+                    }
+                    found = False
+                    for name, code in day_map.items():
+                        if name in schedule_base:
+                             cron_expressions.append(f"{minute} {hour} * * {code}")
+                             found = True
+                             break
+                    if not found:
+                         logger.warning(f"Could not parse specific day schedule: {schedule_base}")
+                
+                else:
+                    logger.warning(f"Unknown schedule format: {schedule_base}")
+
+        except Exception as e:
+            logger.warning(f"Failed to parse schedule part '{part}': {e}")
+
     return cron_expressions
 
 

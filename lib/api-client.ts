@@ -1,5 +1,5 @@
 /**
- * API Client for Marico News Summarizer Backend
+ * API Client for Marico Content Agent Backend
  * Connects Next.js frontend to FastAPI backend
  */
 

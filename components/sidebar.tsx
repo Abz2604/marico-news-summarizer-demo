@@ -26,7 +26,7 @@ export function Sidebar() {
             <span className="text-sidebar-primary-foreground font-bold">📰</span>
           </div>
           <div>
-            <h1 className="font-semibold text-sidebar-foreground">Content Summarizer</h1>
+            <h1 className="font-semibold text-sidebar-foreground">Marico Content Agent</h1>
             <p className="text-xs text-sidebar-accent-foreground">Daily Briefings</p>
           </div>
         </div>
