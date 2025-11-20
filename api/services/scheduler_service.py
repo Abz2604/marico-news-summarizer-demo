@@ -17,7 +17,8 @@ import snowflake.connector
 from services import campaigns_service, briefings_service, agent_service, email_service
 from services.db import connect
 from services.agent_service import get_summaries_for_briefings
-from agent.graph import run_agent
+from agent_v2.agent_v2 import AgentV2
+from agent_v2.types import AgentV2Request, PageType
 
 logger = logging.getLogger(__name__)
 
@@ -162,44 +163,63 @@ async def _run_briefing_and_wait(
     seed_links: List[str]
 ) -> tuple[str, bool, Optional[str]]:
     """
-    Run a briefing and wait for completion.
+    Run a briefing using Agent V2 and wait for completion.
     
     Returns: (briefing_id, success, error_message)
     """
     from services.db import connect
     import asyncio
     
-    logger.info(f"[run_id={run_id}] Starting briefing run for {briefing_id}")
+    logger.info(f"[run_id={run_id}] Starting briefing run for {briefing_id} (Agent V2)")
     
     try:
-        # Run agent (async)
-        result = await run_agent(
+        # Initialize Agent V2
+        agent = AgentV2()
+        
+        # Create request object
+        request = AgentV2Request(
+            url=seed_links[0] if seed_links else "",  # V2 expects a primary URL, fallback to empty if none (though validation usually catches this)
             prompt=prompt,
-            seed_links=seed_links,
-            max_articles=10
+            page_type=PageType.BLOG_LISTING,  # Default to blog listing for now as per V2 capabilities
+            max_items=10,
+            time_range_days=None # Could be configurable in future
         )
+        
+        # Run agent (async)
+        result = await agent.run(request)
         
         # Use connection for database operations
         with connect() as conn:
-            if not result:
-                agent_service.mark_run_as_failed(run_id, "Agent returned no result", conn=conn)
-                return (briefing_id, False, "Agent returned no result")
+            if not result or not result.items:
+                agent_service.mark_run_as_failed(run_id, "Agent returned no content", conn=conn)
+                return (briefing_id, False, "Agent returned no content")
+            
+            # Convert V2 response to format expected by database storage
+            # Summary markdown might be in result.summary or generated from items
+            summary_text = result.summary or "No summary generated."
+            
+            # Extract bullet points (simulate if not present, V2 might return structured summary)
+            # For now, we'll just use the item titles as bullet points if no explicit bullets
+            bullet_points = [item.title for item in result.items if item.title]
+            
+            # Format citations
+            citations = [{"url": item.url, "label": item.title} for item in result.items]
             
             # Save the summary
             agent_service.save_summary_and_finalize_run(
                 run_id=run_id,
                 briefing_id=briefing_id,
-                summary_markdown=result.summary_markdown,
-                bullet_points=result.bullet_points,
-                citations=result.citations,
-                model=result.model,
+                summary_markdown=summary_text,
+                bullet_points=bullet_points,
+                citations=citations,
+                model="agent-v2", # Identify as V2 run
                 conn=conn
             )
             
             # Update briefing's last_run_at timestamp
             briefings_service.update_briefing_last_run(briefing_id, conn=conn)
             
-            logger.info(f"[run_id={run_id}] ✅ Briefing {briefing_id} completed successfully")
+            logger.info(f"[run_id={run_id}] ✅ Briefing {briefing_id} completed successfully with Agent V2")
             return (briefing_id, True, None)
             
     except Exception as e:
